@@ -1297,7 +1297,257 @@ text(3.5, L_sweep^2 * 0.85, sprintf("N = %d", L_sweep^2), col = "gray60", cex = 
 
 The mean cluster size has a *peak* (in fact, near-divergence) at $T_c$. Far from $T_c$, clusters are small — Wolff degenerates to roughly single-spin updates. At $T_c$, clusters grow to a substantial fraction of the lattice. **This is the geometric reason Wolff has near-zero critical slowing down**: it automatically uses big moves where big moves are needed and small moves where small moves suffice.
 
+# Block bootstrap for honest error bars
+
+The phase-transition curves in Section 9 have no error bars — every point is a raw mean over 5000 cluster flips, with no indication of statistical uncertainty. This section fixes that using the **block bootstrap**, the standard technique for estimating uncertainty from correlated time series.
+
+## Why not the textbook SE formula?
+
+For an independent sample of size $M$, the standard error of the sample mean is $\text{SE}(\bar{x}) = s / \sqrt{M}$ where $s$ is the sample standard deviation. This formula *fails* for MCMC output because the samples are correlated — two adjacent sweeps are nearly identical, so $M$ samples don't give you $M$ worth of information.
+
+The correct correction is: effective sample size $\text{ESS} = M / (2 \tau_{\text{int}})$, and $\text{SE}(\bar{x}) = s / \sqrt{\text{ESS}}$. But this only works for the sample *mean*. For nonlinear observables like specific heat ($c = \mathrm{Var}(E)/(NT^2)$) and susceptibility ($\chi = \mathrm{Var}(M)/(NT)$), which involve variances rather than means, we need something more general.
+
+## Block bootstrap, in one paragraph
+
+The idea: split the time series into $B$ contiguous blocks of length $\ell$. Treat each block as a single "super-sample". To generate one bootstrap replicate, draw $B$ blocks with replacement from the set of blocks and concatenate them into a new series of length $B\ell$. Compute whatever observable you care about from this replicate. Repeat this $R$ times (say $R = 200$) and the empirical standard deviation of the $R$ replicates gives you a bootstrap estimate of the standard error.
+
+The key choice is the block length $\ell$. It must be large enough that samples from different blocks are nearly independent — in practice, $\ell \approx 2\tau_{\text{int}}$ is the rule of thumb (Künsch 1989, *Ann. Statist.* 17, 1217). That's why we needed Section 8's autocorrelation machinery before we could do this: we use the measured $\tau_{\text{int}}$ to choose $\ell$ automatically.
+
+## Block bootstrap implementation
+
+```{r block-bootstrap-fn}
+#' Block bootstrap standard error for a function of a time series.
+#'
+#' @param x Numeric vector (the time series).
+#' @param stat_fn Function mapping a numeric vector to a scalar observable.
+#' @param block_length Length of each block. If NULL, use 2 * integrated_tau(x).
+#' @param n_boot Number of bootstrap replicates.
+#' @param seed Optional RNG seed.
+#' @return A list with `estimate`, `se`, `block_length`, and `boot_values`.
+block_bootstrap <- function(x, stat_fn,
+                            block_length = NULL,
+                            n_boot = 200,
+                            seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  n <- length(x)
+
+  if (is.null(block_length)) {
+    tau <- integrated_tau(x)$tau
+    block_length <- max(1, ceiling(2 * tau))
+  }
+  # Cap block_length so we have at least a few blocks to resample
+  block_length <- min(block_length, n %/% 4)
+  n_blocks_full <- n %/% block_length
+
+  # Split the series into non-overlapping blocks (dropping any leftover)
+  blocks <- matrix(x[seq_len(n_blocks_full * block_length)],
+                   nrow = block_length)  # columns are blocks
+
+  # Point estimate on the full series
+  estimate <- stat_fn(x)
+
+  # Bootstrap: resample columns (blocks) with replacement, concatenate
+  boot_values <- numeric(n_boot)
+  for (b in seq_len(n_boot)) {
+    chosen <- sample.int(n_blocks_full, n_blocks_full, replace = TRUE)
+    boot_series <- as.vector(blocks[, chosen])
+    boot_values[b] <- stat_fn(boot_series)
+  }
+
+  list(
+    estimate     = estimate,
+    se           = sd(boot_values),
+    block_length = block_length,
+    n_blocks     = n_blocks_full,
+    boot_values  = boot_values
+  )
+}
+```
+
+## Sanity check: do the error bars make sense at one temperature?
+
+Before running the bootstrap across all 34 temperatures in the sweep, let's verify it behaves sensibly at a single point. Run at $T_c$ on $L = 32$ with a long enough chain to get a clean bootstrap, then compare the bootstrap SE to the "naive" SE you'd get from assuming iid samples.
+
+```{r bootstrap-sanity}
+run_test <- run_wolff_fast(L = 32, T = 2.269, n_cluster_flips = 10000, seed = 777)
+E_series_test <- run_test$series$E
+N_test <- 32^2
+T_test <- 2.269
+
+# Mean energy per spin, with honest error bar
+stat_energy_per_spin <- function(E) mean(E) / N_test
+bs_e <- block_bootstrap(E_series_test, stat_energy_per_spin, n_boot = 200, seed = 1)
+
+# Specific heat per spin, with honest error bar
+stat_c_per_spin <- function(E) (mean(E^2) - mean(E)^2) / (N_test * T_test^2)
+bs_c <- block_bootstrap(E_series_test, stat_c_per_spin, n_boot = 200, seed = 2)
+
+cat(sprintf("At T_c, L = 32, 10000 cluster flips:\n"))
+cat(sprintf("  energy per spin: %.4f +/- %.4f  (block length = %d)\n",
+            bs_e$estimate, bs_e$se, bs_e$block_length))
+cat(sprintf("  specific heat:   %.4f +/- %.4f  (block length = %d)\n",
+            bs_c$estimate, bs_c$se, bs_c$block_length))
+
+# For comparison: the naive iid standard error on the energy
+sd_E <- sd(E_series_test) / N_test
+naive_se_e <- sd_E / sqrt(length(E_series_test))
+cat(sprintf("  naive iid SE on energy (WRONG):  %.4f\n", naive_se_e))
+cat(sprintf("  bootstrap SE on energy (right):  %.4f\n", bs_e$se))
+cat(sprintf("  ratio (how much the naive formula underestimates): %.2fx\n",
+            bs_e$se / naive_se_e))
+```
+
+The bootstrap SE should be slightly larger than the naive iid SE — the amount by which it's larger tells you how strongly the correlations matter. For Wolff at $T_c$ on $L = 32$, cluster flips are essentially independent (we saw $\tau_M = 0.5$ earlier), so the bootstrap SE should be close to the naive SE. For Metropolis on the same run, the bootstrap SE would be $\sqrt{2\tau}$ times larger than the naive SE, i.e. ~10x at $T_c$.
+
+## Error bars for the full temperature sweep
+
+Now we re-run the sweep, but this time for each temperature we compute block-bootstrap error bars for all four observables. To keep runtime reasonable we use $5000$ cluster flips per temperature (same as before) and $n_{\text{boot}} = 100$ bootstrap replicates. Total runtime: ~2-3 minutes.
+
+```{r sweep-with-errors}
+L_err <- 32
+n_flips_err <- 5000
+n_boot_err <- 100
+
+sweep_err_results <- lapply(T_grid_sweep, function(T) {
+  run <- run_wolff_fast(L = L_err, T = T,
+                        n_cluster_flips = n_flips_err,
+                        seed = round(T * 1000) + 9999)
+  E <- run$series$E
+  M <- run$series$M
+  N_here <- L_err^2
+  T_here <- T
+
+  # Define the four observables as functions of (E, M) series
+  # Bootstrap each using the energy OR magnetization time series as appropriate
+  stat_e <- function(E) mean(E) / N_here
+  stat_c <- function(E) (mean(E^2) - mean(E)^2) / (N_here * T_here^2)
+  stat_m <- function(M) mean(abs(M)) / N_here
+  stat_chi <- function(M) (mean(M^2) - mean(abs(M))^2) / (N_here * T_here)
+
+  bs_e   <- block_bootstrap(E, stat_e,   n_boot = n_boot_err, seed = 1)
+  bs_c   <- block_bootstrap(E, stat_c,   n_boot = n_boot_err, seed = 2)
+  bs_m   <- block_bootstrap(M, stat_m,   n_boot = n_boot_err, seed = 3)
+  bs_chi <- block_bootstrap(M, stat_chi, n_boot = n_boot_err, seed = 4)
+
+  data.frame(
+    T       = T,
+    e       = bs_e$estimate,   e_se   = bs_e$se,
+    m       = bs_m$estimate,   m_se   = bs_m$se,
+    c       = bs_c$estimate,   c_se   = bs_c$se,
+    chi     = bs_chi$estimate, chi_se = bs_chi$se
+  )
+})
+df_err <- do.call(rbind, sweep_err_results)
+head(df_err)
+```
+
+## The four panels with error bars
+
+```{r sweep-plot-errors, fig.width = 10, fig.height = 8}
+T_curve <- seq(min(T_grid_sweep), max(T_grid_sweep), length.out = 400)
+u_exact <- onsager_energy(T_curve)
+m_exact <- onsager_magnetization(T_curve)
+c_exact <- sapply(T_curve, onsager_specific_heat)
+
+# Helper to draw error bars (base R doesn't have a built-in errorbar function)
+draw_errorbars <- function(x, y, se, color, width = 0.01) {
+  segments(x, y - se, x, y + se, col = color, lwd = 1.5)
+}
+
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+# Energy
+plot(df_err$T, df_err$e, pch = 19, cex = 0.9, col = "darkblue",
+     xlab = "T", ylab = "u(T)",
+     main = sprintf("Energy per spin (L = %d) with bootstrap SE", L_err),
+     ylim = range(c(df_err$e - df_err$e_se, df_err$e + df_err$e_se, u_exact)))
+draw_errorbars(df_err$T, df_err$e, df_err$e_se, "darkblue")
+lines(T_curve, u_exact, col = "gray40", lwd = 2)
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+legend("topleft", legend = c("Wolff +/- 1 SE", "Onsager"),
+       col = c("darkblue", "gray40"), pch = c(19, NA), lwd = c(NA, 2),
+       bty = "n", cex = 0.85)
+
+# Magnetization
+plot(df_err$T, df_err$m, pch = 19, cex = 0.9, col = "darkgreen",
+     xlab = "T", ylab = "|m|(T)",
+     main = sprintf("Magnetization per spin (L = %d)", L_err),
+     ylim = c(0, 1.05))
+draw_errorbars(df_err$T, df_err$m, df_err$m_se, "darkgreen")
+lines(T_curve, m_exact, col = "gray40", lwd = 2)
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+legend("topright", legend = c("Wolff +/- 1 SE", "Yang"),
+       col = c("darkgreen", "gray40"), pch = c(19, NA), lwd = c(NA, 2),
+       bty = "n", cex = 0.85)
+
+# Specific heat
+plot(df_err$T, df_err$c, pch = 19, cex = 0.9, col = "darkred",
+     xlab = "T", ylab = "c(T)",
+     main = sprintf("Specific heat per spin (L = %d)", L_err),
+     ylim = range(c(df_err$c - df_err$c_se, df_err$c + df_err$c_se, c_exact)))
+draw_errorbars(df_err$T, df_err$c, df_err$c_se, "darkred")
+lines(T_curve, c_exact, col = "gray40", lwd = 2)
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+legend("topleft", legend = c("Wolff +/- 1 SE", "Onsager"),
+       col = c("darkred", "gray40"), pch = c(19, NA), lwd = c(NA, 2),
+       bty = "n", cex = 0.85)
+
+# Susceptibility
+plot(df_err$T, df_err$chi, pch = 19, cex = 0.9, col = "purple",
+     xlab = "T", ylab = expression(chi(T)),
+     main = sprintf("Magnetic susceptibility (L = %d)", L_err),
+     ylim = range(c(df_err$chi - df_err$chi_se, df_err$chi + df_err$chi_se)))
+draw_errorbars(df_err$T, df_err$chi, df_err$chi_se, "purple")
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+legend("topright", legend = "Wolff +/- 1 SE",
+       col = "purple", pch = 19, bty = "n", cex = 0.85)
+
+par(mfrow = c(1, 1))
+```
+
+## Where are the error bars largest?
+
+The beautiful thing about having honest error bars is that they themselves carry physical information. Let's plot the error bars' magnitudes as a function of temperature:
+
+```{r se-vs-T, fig.width = 8, fig.height = 6}
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+plot(df_err$T, df_err$e_se, pch = 19, col = "darkblue", type = "b",
+     xlab = "T", ylab = "SE(u)", main = "Energy SE vs T")
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+
+plot(df_err$T, df_err$m_se, pch = 19, col = "darkgreen", type = "b",
+     xlab = "T", ylab = "SE(|m|)", main = "Magnetization SE vs T")
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+
+plot(df_err$T, df_err$c_se, pch = 19, col = "darkred", type = "b",
+     xlab = "T", ylab = "SE(c)", main = "Specific heat SE vs T")
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+
+plot(df_err$T, df_err$chi_se, pch = 19, col = "purple", type = "b",
+     xlab = "T", ylab = expression("SE(" * chi * ")"),
+     main = "Susceptibility SE vs T")
+abline(v = T_CRITICAL, lty = 2, col = "gray")
+
+par(mfrow = c(1, 1))
+```
+
+**Each of these four panels should show a peak at $T_c$.** The reason: all four of $u, |m|, c, \chi$ have variances that peak at criticality (either because the observable itself becomes more fluctuating — $u$, $|m|$ — or because they are *defined as* variances that diverge with $L$ at $T_c$ — $c, \chi$). Larger variance → larger bootstrap SE. So the error bars should be small away from $T_c$ and large near it, and the shape of the SE vs $T$ curve should be peaked right at the phase transition.
+
+This is itself a physical result: **the most uncertain measurements happen at the most interesting temperature**, and that's not a coincidence — it's finite-size scaling theory predicting that the fluctuations of every observable peak at $T_c$. Honest error bars make this visible.
+
 # What's next
 
-- **Section 10**: Block bootstrap for honest error bars on all observables in the temperature sweep above. The error bars will be small away from $T_c$ and larger near it (the variance peak at criticality), which is itself a physical result.
-- **Section 11**: Final plots and report figures.
+- **Section 11**: Final report figures. Polish the key plots for presentation and submission.
+
+Everything that the project proposal promised is now done:
+
+1. ✓ Metropolis sampler implemented from scratch in R and Rcpp
+2. ✓ Wolff cluster sampler implemented from scratch in Rcpp
+3. ✓ Onsager exact ground truth coded and validated
+4. ✓ Autocorrelation and effective sample size diagnostics
+5. ✓ Dynamic critical exponent measured for both samplers
+6. ✓ Full phase transition curves ($u, |m|, c, \chi$) against ground truth
+7. ✓ Block bootstrap error bars on every reported observable
+
+The project is scientifically complete. Section 11 is a polish pass for the final report.
