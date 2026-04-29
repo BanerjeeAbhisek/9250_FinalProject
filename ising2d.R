@@ -1,31 +1,9 @@
-# =============================================================================
+
 # Comparative Study of MCMC Sampling Strategies for the 2D Ising Model
-# Sections 1-3 (consolidated and executable)
-#
 # Abhisek Banerjee & Mengyan Jing
 # Course 9250, Spring 2026
-#
-# This file is self-contained: sourcing it runs every section end-to-end
-# (prints T_c, initializes a test lattice, evaluates the Onsager curves,
-# displays the ground-truth figure). Functions are still defined so the
-# downstream sections (4+) can call them unchanged.
-#
-# Layout:
-#   Section 1: Setup (constants, T_c, literature z values)         + demo
-#   Section 2: Lattice utilities (init, total energy, dE w/ PBC)   + demo
-#   Section 3: Onsager / Yang exact ground truth                   + demo
-#     3.1  complete elliptic integrals (guarded)
-#     3.2  Onsager energy                                          Eq.(116)
-#     3.3  Onsager specific heat                                   Eq.(117)
-#     3.4  Onsager specific heat asymptotic form                   Eq.(120)
-#     3.5  Yang spontaneous magnetization                          (1952)
-#     3.6  safe wrappers (avoid singular elliptic_K near T_c)
-#     3.7  curve wrappers (NA in a guard band around T_c)
-#     3.8  publication figure via ggplot2  (new: replaces base R version)
-#
-# Dependencies (install once):
-#   install.packages(c("Rcpp", "ggplot2", "patchwork"))
-# =============================================================================
+
+# load necessary packages first 
 
 suppressPackageStartupMessages({
   library(Rcpp)
@@ -34,19 +12,19 @@ suppressPackageStartupMessages({
 })
 
 
-# =============================================================================
+
 # Section 1: Setup
-# =============================================================================
+
 
 J_COUPLING  <- 1
 K_BOLTZMANN <- 1
-T_CRITICAL  <- 2 / log(1 + sqrt(2))     # Onsager (1944), from Eq. (39a)
+T_CRITICAL  <- 2 / log(1 + sqrt(2))     
 
-# Literature dynamic critical exponents (used downstream in Sections 8 & 9)
-Z_METROPOLIS_LITERATURE <- 2.1665   # Nightingale & Blote (1996), PRL 76, 4548
-Z_WOLFF_LITERATURE      <- 0.25     # Wolff (1989), PRL 62, 361
 
-# --- Section 1 output -------------------------------------------------------
+Z_METROPOLIS_LITERATURE <- 2.1665   
+Z_WOLFF_LITERATURE      <- 0.25     
+
+
 cat("=== Section 1: Setup ===\n")
 cat(sprintf("  J (coupling)            = %g\n",    J_COUPLING))
 cat(sprintf("  k_B (Boltzmann)         = %g\n",    K_BOLTZMANN))
@@ -58,11 +36,9 @@ cat(sprintf("  z_Wolff      (lit.)     = %.2f    (Wolff 1989)\n",
 cat("\n")
 
 
-# =============================================================================
-# Section 2: Lattice utilities
-# =============================================================================
 
-# 2.1: initialization ---------------------------------------------------------
+# Section 2: Lattice utilities
+
 
 init_lattice <- function(L, state = c("cold", "hot", "ground")) {
   state <- match.arg(state)
@@ -73,7 +49,6 @@ init_lattice <- function(L, state = c("cold", "hot", "ground")) {
   }
 }
 
-# 2.2: total energy (Newman & Barkema Eq. 3.1) -------------------------------
 
 total_energy <- function(spins) {
   L <- nrow(spins); stopifnot(ncol(spins) == L)
@@ -84,7 +59,6 @@ total_energy <- function(spins) {
 
 total_magnetization <- function(spins) sum(spins)
 
-# 2.3: single-spin dE (Newman & Barkema Eq. 3.10) ----------------------------
 
 delta_energy <- function(spins, i, j) {
   L  <- nrow(spins)
@@ -96,7 +70,7 @@ delta_energy <- function(spins, i, j) {
   2 * J_COUPLING * spins[i, j] * neighbor_sum
 }
 
-# --- Section 2 output (small smoke test) ------------------------------------
+
 cat("=== Section 2: Lattice utilities ===\n")
 local({
   set.seed(42)
@@ -119,13 +93,8 @@ local({
 cat("\n")
 
 
-# =============================================================================
-# Section 3: Onsager / Yang exact ground truth
-# =============================================================================
 
-# 3.1: complete elliptic integrals -------------------------------------------
-# Hardened guard: any |k| within 1e-10 of 1 returns Inf, preventing
-# integrate() from being called at numerically-pathological k values.
+# Section 3: Onsager / Yang exact ground truth
 
 elliptic_K <- function(k) {
   if (abs(k) >= 1 - 1e-10) return(Inf)
@@ -138,7 +107,7 @@ elliptic_E <- function(k) {
   integrate(integrand, 0, pi / 2, rel.tol = 1e-8, subdivisions = 2000L)$value
 }
 
-# 3.2: energy per spin (Onsager Eq. 116) -------------------------------------
+
 
 onsager_energy <- function(T) {
   vapply(T, function(Ti) {
@@ -151,7 +120,6 @@ onsager_energy <- function(T) {
   }, numeric(1))
 }
 
-# 3.3: specific heat (Onsager Eq. 117) ---------------------------------------
 
 onsager_specific_heat <- function(T) {
   vapply(T, function(Ti) {
@@ -166,7 +134,6 @@ onsager_specific_heat <- function(T) {
   }, numeric(1))
 }
 
-# 3.4: asymptotic specific heat near T_c (Onsager Eq. 120) -------------------
 
 onsager_specific_heat_asymptotic <- function(T) {
   vapply(T, function(Ti) {
@@ -177,7 +144,6 @@ onsager_specific_heat_asymptotic <- function(T) {
   }, numeric(1))
 }
 
-# 3.5: magnetization (Yang 1952) ---------------------------------------------
 
 onsager_magnetization <- function(T) {
   vapply(T, function(Ti) {
@@ -187,10 +153,6 @@ onsager_magnetization <- function(T) {
   }, numeric(1))
 }
 
-# 3.6: safe ground-truth wrappers (avoid singular elliptic_K) ----------------
-# Use vapply + if/else (lazy: only the chosen branch is evaluated).
-# .SHIFT = 1e-3: u(T_c - 1e-3) = -1.4182 vs true -sqrt(2) ~ -1.4142
-# (0.3% off, fine as a numerical proxy).
 
 .EPS_TC    <- 1e-9
 .SHIFT     <- 1e-3
@@ -224,9 +186,7 @@ onsager_specific_heat_proxy <- function(T) {
   }, numeric(1))
 }
 
-# 3.7: curve wrappers for plotting (NA in window around T_c) -----------------
-# Default guard 0.015 is comfortably > .SHIFT and big enough that
-# integrate() never gets called too close to k = 1.
+
 
 onsager_energy_curve <- function(T_grid, guard = 0.015) {
   result  <- numeric(length(T_grid))
@@ -252,7 +212,7 @@ onsager_magnetization_curve <- function(T_grid, guard = 0.015) {
   result
 }
 
-# --- Section 3 smoke test ---------------------------------------------------
+
 cat("=== Section 3: Onsager / Yang exact ground truth ===\n")
 local({
   # A few evaluations: low T, just below T_c, high T
@@ -274,14 +234,7 @@ local({
 cat("\n")
 
 
-# =============================================================================
-# 3.8: Publication-quality figure via ggplot2
-#
-# House styling (theme_paper + Okabe-Ito palette) is defined here because
-# it will be reused by every downstream figure in the paper.
-# =============================================================================
 
-# -- shared theme -------------------------------------------------------------
 
 theme_paper <- function(base_size = 10) {
   theme_minimal(base_size = base_size, base_family = "") +
@@ -304,19 +257,19 @@ theme_paper <- function(base_size = 10) {
     )
 }
 
-# -- shared Okabe-Ito palette -------------------------------------------------
+
 
 PAPER_COLORS <- list(
-  energy         = "#0072B2",   # blue
-  specific_heat  = "#D55E00",   # vermillion
-  magnetization  = "#009E73",   # bluish green
-  susceptibility = "#CC79A7",   # reddish purple
+  energy         = "#0072B2",   
+  specific_heat  = "#D55E00",  
+  magnetization  = "#009E73",   
+  susceptibility = "#CC79A7",   
   tc_line        = "grey45",
-  metro          = "#D55E00",   # Metropolis in downstream figures
-  wolff          = "#0072B2"    # Wolff      in downstream figures
+  metro          = "#D55E00",   
+  wolff          = "#0072B2"    
 )
 
-# -- one panel ----------------------------------------------------------------
+
 
 .plot_one_observable <- function(df, ylab_expr, color, title,
                                  y_limits = NULL, tc_label_y = NULL,
@@ -350,7 +303,7 @@ PAPER_COLORS <- list(
   p
 }
 
-# -- full figure builder ------------------------------------------------------
+
 
 plot_onsager_ground_truth_gg <- function(T_min     = 1.0,
                                          T_max     = 4.0,
@@ -407,16 +360,14 @@ plot_onsager_ground_truth_gg <- function(T_min     = 1.0,
     )
 }
 
-# --- Section 3 output: render the figure -----------------------------------
+
 cat("=== Section 3.8: ground-truth figure ===\n")
 print(plot_onsager_ground_truth_gg())
 cat("\n")
 
 cat("=== Sections 1-3 complete. ===\n")
 
-# =============================================================================
 # Section 4: Sanity checks (14 assertions)
-# =============================================================================
 
 run_sanity_checks <- function() {
   cat("=== Sanity checks ===\n")
@@ -487,29 +438,13 @@ run_sanity_checks <- function() {
   cat("=====================\n")
 }
 
-# --- Section 4 output: run the checks ---------------------------------------
+
 run_sanity_checks()
 cat("\n")
 
-##> === Sanity checks ===
-##>   [01] Cold lattice energy: got -128, expected -128 -- PASS
-##>   [02] Cold lattice magnetization: got 64, expected 64 -- PASS
-##>   [03] dE flipping one spin in cold lattice: got 8, expected 8 -- PASS
-##>   [04] Incremental vs. full energy after flip: -120 vs -120 -- PASS
-##>   [05] dE at corner (PBC check): got 8, expected 8 -- PASS
-##>   [06] T_c = 2.269185 (Onsager)
-##>   [07] u(T_c - 1e-3): got -1.418223, expected ~-1.414214 -- PASS
-##>   [08] c(T_c - 0.005): full 2.7190 vs asymptotic 2.7184 -- PASS
-##>   [09] |m|(T=1): got 0.999276 (should be ~1) -- PASS
-##>   [10] |m|(T=3): got 0.000000 (should be 0) -- PASS
-##>   [11] c_asym convergence: rel.err(dT=5e-3)=2.35e-04 > rel.err(dT=1e-4)=5.12e-06 -- PASS
-##>   [12] u(T=100) high-T limit: got -0.0200 (should be ~0) -- PASS
-##>   [13] Z_METROPOLIS_LITERATURE = 2.1665 (Nightingale & Blote 1996)
-##>   [14] Z_WOLFF_LITERATURE = 0.25 (Wolff 1989: ~0.25 for 2D Ising)
-##>   =====================
-# =============================================================================
+
 # Section 5: Pure R Metropolis sampler (reference)
-# =============================================================================
+
 
 metropolis_step <- function(spins, T) {
   L <- nrow(spins)
@@ -588,9 +523,9 @@ compute_observables <- function(run) {
 }
 
 
-# =============================================================================
+
 # Section 6: Rcpp Metropolis sampler (~300x faster)
-# =============================================================================
+
 
 Rcpp::cppFunction('
 List run_metropolis_cpp_inner(int L, double T, int n_sweeps, int n_burnin,
@@ -705,9 +640,6 @@ run_metropolis_fast <- function(L, T, n_sweeps,
 }
 
 
-# =============================================================================
-# Section 6.1: Speed benchmark across L and T
-# =============================================================================
 
 benchmark_metropolis_samplers <- function(L_values = c(8, 16, 32, 64),
                                           T_values = c(1.5, T_CRITICAL, 4.0),
@@ -766,41 +698,33 @@ benchmark_metropolis_samplers <- function(L_values = c(8, 16, 32, 64),
 }
 
 
-# =============================================================================
-# Okabe-Ito palettes for discrete variables (temperature regime, lattice size).
-# Defined here because downstream sections reuse them; safe to redefine.
-# =============================================================================
 
-# One color per T-regime (ordered, critical, disordered)
+
 T_REGIME_COLORS <- c(
-  "below Tc" = "#0072B2",   # blue   -> ordered phase
-  "at Tc"    = "#D55E00",   # vermillion -> critical
-  "above Tc" = "#009E73"    # green -> disordered phase
+  "below Tc" = "#0072B2",  
+  "at Tc"    = "#D55E00",  
+  "above Tc" = "#009E73"    
 )
 
-# One color per lattice size (4 distinct Okabe-Ito hues, light -> dark)
+
 L_COLORS <- c(
-  "8"  = "#56B4E9",   # sky blue
-  "16" = "#F0E442",   # yellow
-  "32" = "#CC79A7",   # reddish purple
-  "64" = "#000000"    # black (largest L, strongest contrast)
+  "8"  = "#56B4E9",   
+  "16" = "#F0E442",   
+  "32" = "#CC79A7",   
+  "64" = "#000000"   
 )
 
 
-# =============================================================================
-# Section 6.1 (plot): benchmark figure via ggplot2
-# =============================================================================
+
 
 plot_metropolis_benchmark <- function(bench_df) {
-  # Keep L as numeric for log scales; create a factor copy only where needed.
+ 
   bench_df$T_label <- factor(bench_df$T_label,
                              levels = c("below Tc", "at Tc", "above Tc"))
   L_levels <- sort(unique(bench_df$L))          # numeric
   bench_df$L_fct <- factor(bench_df$L, levels = L_levels)
   
-  # ------------------------------------------------------------------
-  # Panel A: Wall time vs L (log-log), both pure-R and Rcpp, per T
-  # ------------------------------------------------------------------
+ 
   df_long <- rbind(
     data.frame(L = bench_df$L, T_label = bench_df$T_label,
                impl = "pure R", time = bench_df$t_R),
@@ -841,9 +765,7 @@ plot_metropolis_benchmark <- function(bench_df) {
           legend.box       = "vertical",
           legend.spacing.y = unit(-4, "pt"))
   
-  # ------------------------------------------------------------------
-  # Panel B: Speedup vs L, per T
-  # ------------------------------------------------------------------
+  
   med_speedup <- median(bench_df$speedup)
   
   p_sp_L <- ggplot(bench_df, aes(x = L, y = speedup,
@@ -864,9 +786,7 @@ plot_metropolis_benchmark <- function(bench_df) {
     theme_paper() +
     theme(legend.position = "right")
   
-  # ------------------------------------------------------------------
-  # Panel C: Speedup vs T, per L  (L is discrete here)
-  # ------------------------------------------------------------------
+ 
   p_sp_T <- ggplot(bench_df, aes(x = T, y = speedup,
                                  color = L_fct, group = L_fct)) +
     geom_vline(xintercept = T_CRITICAL, linetype = "dashed",
@@ -900,10 +820,6 @@ plot_metropolis_benchmark <- function(bench_df) {
   combined
 }
 
-# =============================================================================
-# Section 6.2: Comprehensive validation against all ground truths
-# (non-plotting code unchanged from earlier version)
-# =============================================================================
 
 choose_n_sweeps <- function(L, T, base_n = 5000, tol = 0.05) {
   if (abs(T - T_CRITICAL) < tol) as.integer(base_n * (L / 8)^2) else base_n
@@ -1071,9 +987,6 @@ validate_metropolis_all_observables <- function(
   invisible(result)
 }
 
-# =============================================================================
-# Section 6.2 (plot): validation figure via ggplot2
-# =============================================================================
 
 plot_metropolis_validation <- function(validation_df, c_cap = 4) {
   validation_df$L_fct <- factor(validation_df$L,
@@ -1088,10 +1001,7 @@ plot_metropolis_validation <- function(validation_df, c_cap = 4) {
     m = onsager_magnetization_curve(T_curve)
   )
   
-  # ------------------------------------------------------------------
-  # Shared Tc line + label helpers (reused across panels)
-  # ------------------------------------------------------------------
-  tc_line <- geom_vline(xintercept = T_CRITICAL,
+    tc_line <- geom_vline(xintercept = T_CRITICAL,
                         linetype   = "dashed",
                         color      = PAPER_COLORS$tc_line,
                         linewidth  = 0.4)
@@ -1102,11 +1012,7 @@ plot_metropolis_validation <- function(validation_df, c_cap = 4) {
              color = PAPER_COLORS$tc_line, size = 3, hjust = 0)
   }
   
-  # ------------------------------------------------------------------
-  # Panel 1: Energy
-  # (no scale_color_manual here -- applied globally via `&` below)
-  # ------------------------------------------------------------------
-  p_u <- ggplot() +
+    p_u <- ggplot() +
     tc_line +
     geom_line(data = df_ref, aes(x = T, y = u),
               color = "grey40", linewidth = 0.9, na.rm = TRUE) +
@@ -1119,10 +1025,7 @@ plot_metropolis_validation <- function(validation_df, c_cap = 4) {
          y     = expression(italic(u)(italic(T)))) +
     theme_paper()
   
-  # ------------------------------------------------------------------
-  # Panel 2: Specific heat (reference capped at c_cap)
-  # ------------------------------------------------------------------
-  p_c <- ggplot() +
+    p_c <- ggplot() +
     tc_line +
     geom_line(data = df_ref, aes(x = T, y = c),
               color = "grey40", linewidth = 0.9, na.rm = TRUE) +
@@ -1139,10 +1042,6 @@ plot_metropolis_validation <- function(validation_df, c_cap = 4) {
          y     = expression(italic(c)(italic(T)))) +
     theme_paper()
   
-  # ------------------------------------------------------------------
-  # Panel 3: Magnetization + per-L 1/sqrt(N) reference segments
-  # `show.legend = FALSE` on segments prevents them polluting the legend
-  # ------------------------------------------------------------------
   df_refN <- data.frame(
     L_fct = factor(sort(unique(validation_df$L)),
                    levels = sort(unique(validation_df$L))),
@@ -1171,10 +1070,7 @@ plot_metropolis_validation <- function(validation_df, c_cap = 4) {
          y     = expression(group("|", italic(m), "|") * (italic(T)))) +
     theme_paper()
   
-  # ------------------------------------------------------------------
-  # Panel 4: Susceptibility (no closed form; expect peak grows as L^1.75)
-  # ------------------------------------------------------------------
-  p_chi <- ggplot(validation_df,
+    p_chi <- ggplot(validation_df,
                   aes(x = T, y = chi_mcmc, color = L_fct)) +
     tc_line +
     geom_point(size = 2.2) +
@@ -1186,13 +1082,7 @@ plot_metropolis_validation <- function(validation_df, c_cap = 4) {
          y     = expression(chi(italic(T)))) +
     theme_paper()
   
-  # ------------------------------------------------------------------
-  # Assemble into a 2x2 grid.
-  # `guides = "collect"` merges legends; `&` operators apply shared
-  # elements (color scale, legend position) to ALL panels so the
-  # legend is identical everywhere and appears only once.
-  # ------------------------------------------------------------------
-  (p_u | p_c) / (p_m | p_chi) +
+   (p_u | p_c) / (p_m | p_chi) +
     plot_layout(guides = "collect") +
     plot_annotation(
       caption = paste(
@@ -1210,86 +1100,17 @@ plot_metropolis_validation <- function(validation_df, c_cap = 4) {
     theme(legend.position = "bottom")
 }
 
-# =============================================================================
-# Drive: run everything end-to-end
-# =============================================================================
-
-# Section 4: sanity checks (if not already run above)
-# run_sanity_checks()
-
-# Section 3.8: ground-truth ggplot (if not already rendered above)
-# print(plot_onsager_ground_truth_gg())
-
-# Section 6.1: speed benchmark (~2-3 minutes)
 bench_df <- benchmark_metropolis_samplers()
 print(plot_metropolis_benchmark(bench_df))
 
-# Section 6.2: ground-truth validation (~1-2 minutes)
+
 validation_df <- validate_metropolis_all_observables()
 print(plot_metropolis_validation(validation_df))
 
-##> === Metropolis speed comparison ===
-##> (n_sweeps = 500 per run, seed = 1)
-##>
-##> L   T_label     T       t_R [s]   t_cpp [s] speedup   acc
-##> ------------------------------------------------------------
-##> 8   below Tc    1.5000  ...       ...       ~300x     ...
-##> ... (12 rows total, one per (L, T) cell)
-##>
-##> Median speedup across all (L, T): 273x   [machine-dependent; your PDF reports 273x]
-##> Scaling exponent at T = 2.2692 (expected ~2 for O(L^2)):
-##>   t_R   ~ L^2.0x
-##>   t_cpp ~ L^2.0x
-##> ===================================
-##> [benchmark figure displays: 3 panels, log-log walltime + 2 speedup panels]
-##>
-##> === Metropolis validation against ground truths ===
-##>
-##> Energy per spin (e):
-##>   (12 rows; errors O(1e-3) away from Tc, O(1e-2) at Tc)
-##>
-##> Specific heat per spin (c):
-##>   (12 rows; MCMC c is rounded below the Onsager proxy at Tc — expected finite-L)
-##>
-##> Absolute magnetization per spin (|m|):
-##>   L=8,  at Tc: m_mcmc=0.765, predicted=0.765, ratio=1.000  (seed row)
-##>   L=16, at Tc: m_mcmc=0.688, predicted=0.701, ratio=0.982
-##>   L=32, at Tc: m_mcmc=0.659, predicted=0.642, ratio=1.026
-##>   L=64, at Tc: m_mcmc=0.586, predicted=0.588, ratio=0.996
-##>
-##> Finite-size scaling of chi at T_c: chi ~ L^1.7... (literature: 1.75)
-##>
-##> --- Summary of absolute errors where meaningful ---
-##> below Tc (T = 1.5000): |e_err| max ~ 0.003
-##> at Tc (T = 2.2692):    |e_err| max ~ 0.02
-##> above Tc (T = 4.0000): |e_err| max ~ 0.005
-##> ==================================================
-##> [validation figure displays: 2x2 panels, u/c/|m|/chi vs T with L as color]
 
 
 
-# =============================================================================
 # Section 7: Chain trace diagnostics (Appendix A)
-#
-# Single 4x3 figure in the Appendix:
-#   rows    = observable  (e, |m|, running c, running chi)
-#   columns = temperature (below Tc, at Tc, above Tc)
-#   colors  = lattice size L in {8, 16, 32, 64}
-#
-# x-axis is sweep FRACTION (t / n_sweeps) so chains of different lengths
-# (L=8 away from T_c runs 5000 sweeps; L=64 at T_c runs 320000 sweeps)
-# align to the same visual width.
-#
-# Runs re-use the validation configuration (same init, same burn-in, same
-# seed policy), so the displayed traces are the exact chains that fed
-# Section 6.2's ground-truth comparison tables.
-# =============================================================================
-
-
-# -----------------------------------------------------------------------------
-# 7.1: Run and cache all 12 (L, T) cells. Returns a named list keyed by
-#      "L{L}_T{below,c,above}".
-# -----------------------------------------------------------------------------
 
 trace_runs_metropolis <- function(L_values  = c(8, 16, 32, 64),
                                   T_values  = c(1.5, T_CRITICAL, 4.0),
@@ -1332,9 +1153,7 @@ trace_runs_metropolis <- function(L_values  = c(8, 16, 32, 64),
 }
 
 
-# -----------------------------------------------------------------------------
-# 7.2: Running estimates for variance-based observables
-# -----------------------------------------------------------------------------
+
 
 running_specific_heat <- function(E, N, T) {
   n      <- seq_along(E)
@@ -1353,9 +1172,6 @@ running_susceptibility <- function(M, N, T) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 7.3: Build a long data frame with all 48 (L, T, observable) traces
-# -----------------------------------------------------------------------------
 
 build_trace_dataframe <- function(runs, max_pts = 2000) {
   rows <- list()
@@ -1365,12 +1181,12 @@ build_trace_dataframe <- function(runs, max_pts = 2000) {
     T   <- run$T
     n   <- run$n_sweeps
     
-    # Thin to roughly max_pts points for plot efficiency
+    
     step    <- max(1L, n %/% max_pts)
     idx     <- seq(1L, n, by = step)
     frac    <- idx / n
     
-    # Compute all four observables for this (L, T) cell
+   
     e_ser   <- run$series$E / N
     m_ser   <- abs(run$series$M) / N
     c_run   <- running_specific_heat(run$series$E, N, T)
@@ -1398,9 +1214,6 @@ build_trace_dataframe <- function(runs, max_pts = 2000) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 7.4: One 4x3 figure (appendix) using ggplot + facet_grid
-# -----------------------------------------------------------------------------
 
 plot_trace_appendix <- function(trace_df) {
   # Factor levels control facet order (rows = observables, cols = T regimes)
@@ -1411,7 +1224,7 @@ plot_trace_appendix <- function(trace_df) {
   trace_df$L_fct      <- factor(trace_df$L,
                                 levels = sort(unique(trace_df$L)))
   
-  # Plain-text facet labels (no plotmath parsing -- robust to special chars)
+  
   obs_labels <- c(
     e   = "u(T)",
     m   = "|m|(T)",
@@ -1466,9 +1279,6 @@ plot_trace_appendix <- function(trace_df) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 7.5: Top-level driver
-# -----------------------------------------------------------------------------
 
 plot_section7_all_traces <- function(L_values  = c(8, 16, 32, 64),
                                      T_values  = c(1.5, T_CRITICAL, 4.0),
@@ -1492,38 +1302,15 @@ plot_section7_all_traces <- function(L_values  = c(8, 16, 32, 64),
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
-
 section7_out <- plot_section7_all_traces()
 
 
 
 
 
-# =============================================================================
+
 # Section 8: Autocorrelation, integrated time, and effective sample size
-#
-# For every (L, T) combination from Section 7, compute:
-#
-#   - rho_E(t), rho_M(t):   empirical autocorrelation function for
-#                           energy and absolute magnetization
-#   - tau_E, tau_M:         Sokal adaptive-window estimator with c = 5,
-#                           capped at n/4
-#   - ESS_E, ESS_M:         n / (2 * tau)
-#   - SE(<e>), SE(<|m|>):   sigma * sqrt(2 * tau / n)
-#
-# Why only e and |m|? These are per-sweep observables. c and chi are
-# variance-based; Section 11 (block bootstrap) handles their uncertainty.
-#
-# Reuse from Section 7: the 12 runs in `section7_runs` ARE the data we need.
-# =============================================================================
 
-
-# -----------------------------------------------------------------------------
-# 8.1: autocorrelation function and integrated tau (Sokal windowing)
-# -----------------------------------------------------------------------------
 
 autocorrelation <- function(x, max_lag = NULL) {
   n <- length(x)
@@ -1551,7 +1338,7 @@ integrated_tau <- function(x, c = 5, max_lag = NULL) {
     closed <- TRUE
   } else {
     W <- max_lag
-    closed <- FALSE   # Sokal hit the cutoff: tau is biased low
+    closed <- FALSE   
   }
   tau_value <- max(tau_partial[W], 0.5)
   list(tau = tau_value, window = W, rho = rho, closed = closed,
@@ -1559,9 +1346,6 @@ integrated_tau <- function(x, c = 5, max_lag = NULL) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 8.2: per-cell diagnostics for both observables
-# -----------------------------------------------------------------------------
 
 cell_diagnostics <- function(run) {
   N <- run$L^2
@@ -1597,9 +1381,6 @@ cell_diagnostics <- function(run) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 8.3: assemble the full diagnostics table
-# -----------------------------------------------------------------------------
 
 build_diagnostics_table <- function(runs) {
   rows <- list()
@@ -1628,9 +1409,6 @@ build_diagnostics_table <- function(runs) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 8.4: pretty printer with explicit Sokal-closure flags
-# -----------------------------------------------------------------------------
 
 print_diagnostics_table <- function(diag_df) {
   cat("=== Autocorrelation diagnostics across (L, T) ===\n")
@@ -1667,9 +1445,6 @@ print_diagnostics_table <- function(diag_df) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 8.5: dynamic critical exponent fit for Metropolis at T_c
-# -----------------------------------------------------------------------------
 
 fit_dynamic_z <- function(diag_df, observable = c("E", "M")) {
   observable <- match.arg(observable)
@@ -1687,8 +1462,8 @@ fit_dynamic_z <- function(diag_df, observable = c("E", "M")) {
   
   fit <- lm(log(sub[[tau_col]]) ~ log(sub$L))
   z   <- coef(fit)[2]
-  # Literature value: Nightingale & Blote's z applies to the slowest mode,
-  # typically the magnetization. We report it only for the M fit.
+  
+ 
   lit_str <- if (observable == "M") {
     sprintf("  (literature z ~ %.4f, Nightingale & Blote 1996)",
             Z_METROPOLIS_LITERATURE)
@@ -1701,12 +1476,6 @@ fit_dynamic_z <- function(diag_df, observable = c("E", "M")) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 8.6: rho(t) grid (4 x 3), ggplot version
-#
-# One figure per observable. Each panel shows rho(t) for 0 <= t <= max_lag_plot
-# with a 1/e reference line; panel title carries tau and a Sokal-closure flag.
-# -----------------------------------------------------------------------------
 
 build_rho_dataframe <- function(runs, observable = c("E", "M"),
                                 max_lag_plot = 200) {
@@ -1747,7 +1516,7 @@ plot_autocorr_grid <- function(runs, observable = c("E", "M"),
   df$T_label <- factor(df$T_label,
                        levels = c("below Tc", "at Tc", "above Tc"))
   
-  # Per-panel tau / closed flag annotation
+  
   panel_labels <- unique(df[, c("L", "T_label", "tau", "closed")])
   panel_labels$L_fct   <- factor(panel_labels$L,
                                  levels = sort(unique(df$L)))
@@ -1756,7 +1525,7 @@ plot_autocorr_grid <- function(runs, observable = c("E", "M"),
   panel_labels$lbl <- with(panel_labels,
                            sprintf("tau = %.1f%s", tau, ifelse(closed, "", " (!)")))
   
-  # Colour the curve by T-regime; each panel has exactly one curve.
+  
   obs_str  <- switch(observable, E = "energy", M = "magnetization")
   obs_expr <- switch(observable,
                      E = expression(rho[E](italic(t))),
@@ -1800,13 +1569,6 @@ plot_autocorr_grid <- function(runs, observable = c("E", "M"),
 }
 
 
-# -----------------------------------------------------------------------------
-# 8.7: tau vs L summary plot (1 x 2), ggplot version
-#
-# Log-log plot of tau_E and tau_M versus L, one series per T regime.
-# Point shape reflects Sokal closure (filled circle = closed, cross = open).
-# A dotted reference line at slope z_lit anchors the visual CSD comparison.
-# -----------------------------------------------------------------------------
 
 plot_tau_scaling <- function(diag_df) {
   diag_df$T_label <- factor(diag_df$T_label,
@@ -1815,8 +1577,7 @@ plot_tau_scaling <- function(diag_df) {
   L_values <- sort(unique(diag_df$L))
   L_min <- min(L_values); L_max <- max(L_values)
   
-  # Reference slope line anchored at the smallest L, Tc row.
-  # Use z_lit from Nightingale-Blote; slope is literature-value, not a fit.
+  
   sub_tc <- diag_df[diag_df$T_label == "at Tc", ]
   sub_tc <- sub_tc[order(sub_tc$L), ]
   
@@ -1829,7 +1590,7 @@ plot_tau_scaling <- function(diag_df) {
     )
   }
   
-  # Shared-legend plotting helper
+  
   make_panel <- function(tau_col, closed_col, y_lab, title_str) {
     ref_df <- build_ref_df(tau_col)
     
@@ -1891,9 +1652,7 @@ plot_tau_scaling <- function(diag_df) {
 }
 
 
-# =============================================================================
-# Top-level driver
-# =============================================================================
+
 
 run_section8_diagnostics <- function(runs = section7_out$runs) {
   cat("\n############################################################\n")
@@ -1920,93 +1679,21 @@ run_section8_diagnostics <- function(runs = section7_out$runs) {
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
 
 section8_diag <- run_section8_diagnostics(section7_out$runs)
 
 
-##> ############################################################
-##> Section 8: autocorrelation diagnostics
-##> ############################################################
-##>
-##> === Autocorrelation diagnostics across (L, T) ===
-##> Notation: tau in sweeps; ESS = n/(2 tau); SE in per-spin units.
-##> Flag '!' next to tau means Sokal windowing did NOT close
-##> (the reported tau is then a lower bound; ESS overestimates the truth).
-##>
-##> L   regime     T        n_swp    tau_E        tau_M        ESS_E     ESS_M     se_e      se_m
-##> ---------------------------------------------------------------------------------------------------
-##> 8   below Tc   1.5000   5000     1.60         2.00         1562      1250      ~0.001    ~0.001
-##> 8   at Tc      2.2692   5000     7.40         178.60       338       14        ~0.01     ~0.03
-##> 8   above Tc   4.0000   5000     1.10         3.70         2273      676       ~0.001    ~0.01
-##> 16  below Tc   1.5000   5000     1.40         1.50         1786      1667      ~0.001    ~0.001
-##> 16  at Tc      2.2692   20000    20.00        767.60       500       13        ~0.004    ~0.03
-##> 16  above Tc   4.0000   5000     1.00         3.90         2500      641       ~0.001    ~0.01
-##> 32  below Tc   1.5000   5000     1.50         1.70         1667      1471      ~0.001    ~0.001
-##> 32  at Tc      2.2692   80000    56.30        2233.30      711       18        ~0.002    ~0.03
-##> 32  above Tc   4.0000   5000     1.00         3.30         2500      758       ~0.001    ~0.01
-##> 64  below Tc   1.5000   5000     1.50         1.70         1667      1471      ~0.001    ~0.001
-##> 64  at Tc      2.2692   320000   220.90       15204.40     725       11        ~0.001    ~0.03
-##> 64  above Tc   4.0000   5000     1.00         3.60         2500      694       ~0.001    ~0.01
-##> ---------------------------------------------------------------------------------------------------
-##>
-##> --- Dynamic critical exponent z (Metropolis at T_c) ---
-##>   z (from tau_E, fit on L = 8,16,32,64): z = 1.64   (no canonical literature value for z_E)
-##>   z (from tau_M, fit on L = 8,16,32,64): z = 2.08   (literature z ~ 2.1665, Nightingale & Blote 1996)
-##>
-##> Plotting rho_E grid (4 x 3)...
-##> Plotting rho_M grid (4 x 3)...
-##> Plotting tau scaling summary (1 x 2)...
 
 
-# =============================================================================
-# Section 9 part 1: Wolff cluster sampler (pure R + Rcpp) + benchmark +
-#                   validation
-#
-# Parallel to Sections 5 + 6 + 6.1 + 6.2 for Metropolis:
-#
-#   Section 9.1: pure R Wolff (reference, obviously correct, slow)
-#   Section 9.2: Rcpp Wolff (fast inner loop)
-#   Section 9.3: benchmark_wolff_samplers across (L, T)
-#   Section 9.4: validate_wolff_all_observables against ground truths
-#
-# The Wolff algorithm (Wolff 1989; Newman & Barkema Section 4.2):
-#   1. Pick a random seed spin. Let sigma be its current value.
-#   2. Push it onto a stack. Mark it as "in the cluster".
-#   3. While the stack is non-empty: pop a spin, look at its 4 neighbors.
-#      For each neighbor that is (a) aligned with sigma and (b) not already
-#      in the cluster, add it with probability P_add = 1 - exp(-2 beta J).
-#   4. Flip every spin in the cluster.
-#
-# Detailed balance gives acceptance = 1, so every cluster move is accepted.
-# The cluster size adapts to the correlation length, so Wolff beats
-# single-spin Metropolis dramatically near T_c.
-#
-# Natural time units (important for all comparisons):
-#   - For Metropolis: 1 sweep = L^2 attempted flips.
-#   - For Wolff:      1 cluster flip = one cluster build + flip.
-#     One cluster flip touches a variable number of spins depending on T
-#     and L. We also track:
-#       equivalent_sweeps = n_cluster_flips * mean_cluster_size / N
-#     which is the Wolff-to-Metropolis work conversion, so we can compare
-#     tau in equivalent-sweep units.
-# =============================================================================
 
 
-# =============================================================================
-# Section 9.1: Pure R Wolff (reference implementation)
-#
-# Slow-but-obviously-correct. Used only to validate the Rcpp version at
-# small L. Uses an explicit stack + in_cluster flag array, same algorithm
-# as the C++ version but with R overhead per step.
-# =============================================================================
+# Section 9 Wolff cluster sampler everything
+
 
 wolff_one_cluster_R <- function(spins, T) {
   L   <- nrow(spins)
   N   <- L * L
-  pad <- 1 - exp(-2 / T)   # P_add = 1 - exp(-2 beta J), with J = 1
+  pad <- 1 - exp(-2 / T)   
   
   # Pick a random seed
   i0 <- sample.int(L, 1L)
@@ -2066,8 +1753,7 @@ run_wolff <- function(L, T, n_cluster_flips,
   for (f in seq_len(n_burnin)) {
     step <- wolff_one_cluster_R(spins, T)
     spins <- step$spins
-    # Wolff doesn't update E,M incrementally (cluster geometry complicates it),
-    # so recompute. This is O(N) but small for the reference version.
+    
     E_current <- total_energy(spins)
     M_current <- total_magnetization(spins)
   }
@@ -2103,16 +1789,7 @@ run_wolff <- function(L, T, n_cluster_flips,
 }
 
 
-# =============================================================================
-# Section 9.2: Rcpp Wolff (fast inner loop)
-#
-# Same algorithm in flat-array C++. Key differences from the pure R version:
-#   - Flat int array for spins (contiguous memory)
-#   - Flat int buffer for the stack (pre-allocated to N)
-#   - Flat int buffer for in_cluster flags (reset per-flip)
-#   - Neighbor lookups via integer modulo, no branching
-#   - ::unif_rand() via R's RNG so set.seed() controls the stream
-# =============================================================================
+
 
 Rcpp::cppFunction('
 List run_wolff_cpp_inner(int L, double T, int n_cluster_flips, int n_burnin,
@@ -2246,8 +1923,7 @@ run_wolff_fast <- function(L, T, n_cluster_flips,
 }
 
 
-# Observables for Wolff runs, same formulas as Metropolis but reading from
-# a different time series object (no acceptance_rate -- Wolff has identically 1).
+
 compute_observables_wolff <- function(run) {
   N <- run$L^2; T <- run$T
   E <- run$series$E; M <- run$series$M
@@ -2262,9 +1938,6 @@ compute_observables_wolff <- function(run) {
 }
 
 
-# =============================================================================
-# Section 9.3: R vs Rcpp Wolff benchmark across (L, T)
-# =============================================================================
 
 benchmark_wolff_samplers <- function(L_values        = c(8, 16, 32, 64),
                                      T_values        = c(1.5, T_CRITICAL, 4.0),
@@ -2307,8 +1980,7 @@ benchmark_wolff_samplers <- function(L_values        = c(8, 16, 32, 64),
   
   cat(sprintf("\nMedian speedup: %.0fx\n", median(bench_df$speedup)))
   
-  # Scaling: for Wolff the work per cluster flip is O(mean_cluster_size),
-  # which itself grows with L at T_c. So t_cpp should NOT be pure L^2.
+  
   mid_T  <- T_values[ceiling(length(T_values) / 2)]
   df_mid <- bench_df[bench_df$T == mid_T, ]
   fit_cpp <- lm(log(t_cpp) ~ log(L), data = df_mid)
@@ -2324,9 +1996,6 @@ benchmark_wolff_samplers <- function(L_values        = c(8, 16, 32, 64),
 }
 
 
-# =============================================================================
-# Section 9.3 (plot): Wolff benchmark figure via ggplot2
-# =============================================================================
 
 plot_wolff_benchmark <- function(bench_df) {
   bench_df$T_label <- factor(bench_df$T_label,
@@ -2336,9 +2005,7 @@ plot_wolff_benchmark <- function(bench_df) {
   
   L_min <- min(L_levels); L_max <- max(L_levels)
   
-  # ------------------------------------------------------------------
-  # Panel A: Wall time vs L (log-log), pure-R + Rcpp, per T
-  # ------------------------------------------------------------------
+
   df_long <- rbind(
     data.frame(L = bench_df$L, T_label = bench_df$T_label,
                impl = "pure R", time = bench_df$t_R),
@@ -2367,9 +2034,7 @@ plot_wolff_benchmark <- function(bench_df) {
           legend.box       = "vertical",
           legend.spacing.y = unit(-4, "pt"))
   
-  # ------------------------------------------------------------------
-  # Panel B: Speedup vs L, per T
-  # ------------------------------------------------------------------
+
   med_speedup <- median(bench_df$speedup)
   
   p_sp <- ggplot(bench_df, aes(x = L, y = speedup,
@@ -2390,9 +2055,7 @@ plot_wolff_benchmark <- function(bench_df) {
     theme_paper() +
     theme(legend.position = "right")
   
-  # ------------------------------------------------------------------
-  # Panel C: Mean cluster size vs L, per T (Wolff-specific!)
-  # ------------------------------------------------------------------
+
   ref_df <- data.frame(L = c(L_min, L_max),
                        mean_cluster = c(L_min, L_max)^2)
   
@@ -2428,7 +2091,7 @@ plot_wolff_benchmark <- function(bench_df) {
     theme_paper() +
     theme(legend.position = "right")
   
-  # Add the L^{7/4} reference line at Tc (FK universality)
+
   if (!is.null(ref_tc)) {
     p_cl <- p_cl +
       geom_line(data = ref_tc, aes(x = L, y = mean_cluster),
@@ -2455,62 +2118,16 @@ plot_wolff_benchmark <- function(bench_df) {
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
+
 
 bench_wolff_df <- benchmark_wolff_samplers()
 print(plot_wolff_benchmark(bench_wolff_df))
 
-##> === Wolff speed comparison ===
-##> (n_cluster_flips = 500 per run, seed = 1)
-##>
-##> L   T_label     T       t_R [s]   t_cpp [s] speedup   mean_cluster
-##> ------------------------------------------------------------------
-##> 8   below Tc    1.5000  ...       ...       ~50x      ~62
-##> 8   at Tc       2.2692  ...       ...       ~50x      ~42
-##> 8   above Tc    4.0000  ...       ...       ~30x      ~4
-##> 16  below Tc    1.5000  ...       ...       ~50x      ~250
-##> 16  at Tc       2.2692  ...       ...       ~50x      ~141
-##> 16  above Tc    4.0000  ...       ...       ~30x      ~4
-##> 32  below Tc    1.5000  ...       ...       ~50x      ~995
-##> 32  at Tc       2.2692  ...       ...       ~50x      ~463
-##> 32  above Tc    4.0000  ...       ...       ~30x      ~4
-##> 64  below Tc    1.5000  ...       ...       ~50x      ~3984
-##> 64  at Tc       2.2692  ...       ...       ~50x      ~1573
-##> 64  above Tc    4.0000  ...       ...       ~30x      ~4
-##> ------------------------------------------------------------------
-##>
-##> Median speedup: 50x   [machine-dependent; your PDF reports ~50x]
-##>
-##> Scaling at T = 2.2692:
-##>   t_R   ~ L^A.AB
-##>   t_cpp ~ L^B.BC
-##>   (for Wolff the per-flip work scales with mean cluster size,
-##>    which itself grows with L at T_c, so L^2 is not the target)
-##> ============================
-##> [Wolff benchmark figure displays: 3 panels, walltime + speedup + cluster size]
 
-
-# =============================================================================
-# Section 9.4: Validation of Wolff against all ground truths
-#
-# Same structure as validate_metropolis_all_observables() in Section 6.2:
-#   - Energy table vs Onsager
-#   - Specific heat vs Onsager (+ proxy at T_c)
-#   - |m| vs Yang / finite-L references
-#   - Finite-size scaling checks at T_c and above
-#   - Susceptibility scaling fit (chi ~ L^1.75 at T_c)
-# Wolff-specific addition: a mean_cluster_size column.
-#
-# Chain length: fixed 10000 cluster flips at every (L, T). Wolff has
-# negligible critical slowing down so fixed suffices (contrast with
-# Metropolis which needed adaptive ~L^2 at T_c).
-# =============================================================================
 
 choose_n_cluster_flips <- function(L, T, base_n = 10000) {
-  # Wolff has nearly flat tau in L, so no scaling needed.
-  # (The function exists mainly for API symmetry with choose_n_sweeps.)
+  
+  
   base_n
 }
 
@@ -2531,8 +2148,7 @@ validate_wolff_all_observables <- function(
       T     <- T_values[k]
       label <- T_labels[k]
       n_cf  <- choose_n_cluster_flips(L, T)
-      # Wolff handles cold start well at any T (escapes local minima via
-      # whole-cluster flips) so just use "hot" consistently.
+      
       init  <- "hot"
       n_bi  <- as.integer(n_cf / 5)
       
@@ -2546,7 +2162,7 @@ validate_wolff_all_observables <- function(
       e_true     <- safe_onsager_energy(T)
       c_true     <- safe_onsager_specific_heat(T)
       c_proxy    <- onsager_specific_heat_proxy(T)
-      m_ref_info <- m_finite_L_reference(L, T)   # reused from Section 6.2
+      m_ref_info <- m_finite_L_reference(L, T)   
       
       rows[[length(rows) + 1]] <- data.frame(
         L = L, T = T, T_label = label,
@@ -2667,12 +2283,6 @@ validate_wolff_all_observables <- function(
 }
 
 
-# =============================================================================
-# Section 9.4 (plot): Wolff validation figure via ggplot2
-# Same 2x2 layout as plot_metropolis_validation, just labeled "Wolff" and
-# fed Wolff data. Shared bottom legend over L.
-# =============================================================================
-
 plot_wolff_validation <- function(validation_df, c_cap = 4) {
   validation_df$L_fct <- factor(validation_df$L,
                                 levels = sort(unique(validation_df$L)))
@@ -2732,7 +2342,7 @@ plot_wolff_validation <- function(validation_df, c_cap = 4) {
   df_refN <- data.frame(
     L_fct = factor(sort(unique(validation_df$L)),
                    levels = sort(unique(validation_df$L))),
-    y_val = 1 / sort(unique(validation_df$L))   # 1/sqrt(N) = 1/L for square lattice
+    y_val = 1 / sort(unique(validation_df$L))  
   )
   
   p_m <- ggplot() +
@@ -2789,66 +2399,10 @@ plot_wolff_validation <- function(validation_df, c_cap = 4) {
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
-
 wolff_validation_df <- validate_wolff_all_observables()
 print(plot_wolff_validation(wolff_validation_df))
 
-##> === Wolff validation against ground truths ===
-##>
-##> Energy per spin (e):
-##>   12 rows, n_cf = 10000 each. Wolff matches Onsager closely:
-##>   |e_err| <  1e-3 below Tc, ~5e-3 at Tc, ~5e-3 above Tc (typical).
-##>
-##> Specific heat per spin (c):
-##>   At Tc: c_mcmc grows with L (1.6, 1.9, 2.1, 2.4 ish), tracking the
-##>   logarithmic divergence from the proxy ~3.52.
-##>
-##> Absolute magnetization per spin (|m|):
-##>   L=8,  at Tc: m_mcmc ~0.77 (Yang scaling 0.7711)
-##>   L=16, at Tc: m_mcmc ~0.71 (scaling 0.7071)
-##>   L=32, at Tc: m_mcmc ~0.65 (scaling 0.6484)
-##>   L=64, at Tc: m_mcmc ~0.59 (scaling 0.5946)
-##>
-##> Finite-size scaling of |m| at T_c (expect |m| ~ L^(-1/8)):
-##>   ratios within ~1-2% (Wolff has many more independent samples than Metropolis here)
-##>
-##> Magnetic susceptibility (chi):
-##>   Peak grows: chi(L=8) ~ 1.4, chi(L=64) ~ 50
-##>   Finite-size scaling fit at T_c: chi ~ L^1.7-1.8 (literature: 1.75)
-##>
-##> --- Summary of absolute errors where meaningful ---
-##> below Tc (T = 1.5000): |e_err| max ~ 5e-4
-##> at Tc (T = 2.2692):    |e_err| max ~ 5e-3
-##> above Tc (T = 4.0000): |e_err| max ~ 5e-3
-##> ==================================================
-##> [Wolff validation figure displays: 2x2 panels with shared L legend at bottom]
 
-# =============================================================================
-# Section 9 part 2: Wolff trace plots across all (L, T) (Appendix A)
-#
-# Parallel to Section 7 for Metropolis. Single 4x3 figure:
-#   rows    = observable  (e, |m|, running c, running chi)
-#   columns = temperature (below Tc, at Tc, above Tc)
-#   colors  = lattice size L in {8, 16, 32, 64}
-#
-# All 12 Wolff chains have the same length (10000 cluster flips), so the
-# x-axis is a raw cluster-flip index -- no normalization needed (unlike
-# Section 7 where Metropolis chain lengths differed by a factor of 64).
-#
-# Wolff's natural time unit is "cluster flip", not sweep. One Wolff cluster
-# flip represents (mean_cluster_size / N) sweeps of computational work,
-# so the chains in this figure represent very different amounts of CPU time
-# even though they have the same number of points.
-# =============================================================================
-
-
-# -----------------------------------------------------------------------------
-# Run the 12 (L, T) cells with Wolff, store the full runs.
-# Reuses choose_n_cluster_flips() from Section 9.4 (fixed 10000).
-# -----------------------------------------------------------------------------
 
 trace_runs_wolff <- function(L_values  = c(8, 16, 32, 64),
                              T_values  = c(1.5, T_CRITICAL, 4.0),
@@ -2891,10 +2445,7 @@ trace_runs_wolff <- function(L_values  = c(8, 16, 32, 64),
 }
 
 
-# -----------------------------------------------------------------------------
-# Running estimates for variance-based observables (defined in Section 7,
-# but redefine here defensively in case this section is sourced standalone).
-# -----------------------------------------------------------------------------
+
 
 if (!exists("running_specific_heat")) {
   running_specific_heat <- function(E, N, T) {
@@ -2915,9 +2466,6 @@ if (!exists("running_susceptibility")) {
 }
 
 
-# -----------------------------------------------------------------------------
-# Build a long data frame with all 48 (L, T, observable) Wolff traces.
-# -----------------------------------------------------------------------------
 
 build_wolff_trace_dataframe <- function(runs, max_pts = 2000) {
   rows <- list()
@@ -2930,7 +2478,7 @@ build_wolff_trace_dataframe <- function(runs, max_pts = 2000) {
     # Thin to roughly max_pts points
     step    <- max(1L, n %/% max_pts)
     idx     <- seq(1L, n, by = step)
-    frac    <- idx / n   # cluster-flip fraction (all chains same length here)
+    frac    <- idx / n   
     
     e_ser   <- run$series$E / N
     m_ser   <- abs(run$series$M) / N
@@ -2959,9 +2507,6 @@ build_wolff_trace_dataframe <- function(runs, max_pts = 2000) {
 }
 
 
-# -----------------------------------------------------------------------------
-# Single 4x3 ggplot figure for the Wolff appendix.
-# -----------------------------------------------------------------------------
 
 plot_wolff_trace_appendix <- function(trace_df) {
   trace_df$observable <- factor(trace_df$observable,
@@ -3025,10 +2570,6 @@ plot_wolff_trace_appendix <- function(trace_df) {
 }
 
 
-# -----------------------------------------------------------------------------
-# Top-level driver.
-# -----------------------------------------------------------------------------
-
 plot_section9_all_traces <- function(L_values  = c(8, 16, 32, 64),
                                      T_values  = c(1.5, T_CRITICAL, 4.0),
                                      T_labels  = c("below Tc", "at Tc", "above Tc"),
@@ -3051,85 +2592,23 @@ plot_section9_all_traces <- function(L_values  = c(8, 16, 32, 64),
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
-
 section9_wolff_out <- plot_section9_all_traces()
 
 
-##> ############################################################
-##> Section 9 (traces): Wolff traces across (L, T) for Appendix A
-##> ############################################################
-##>
-##> === Wolff trace runs ===
-##>   L= 8, T=1.5    (below Tc): n_cf=10000 ... done (~1s,  mean_cl=62.3)
-##>   L= 8, T=2.269  (at Tc   ): n_cf=10000 ... done (~1s,  mean_cl=41.6)
-##>   L= 8, T=4      (above Tc): n_cf=10000 ... done (~1s,  mean_cl=4.2)
-##>   L=16, T=1.5    (below Tc): n_cf=10000 ... done (~3s,  mean_cl=249.7)
-##>   L=16, T=2.269  (at Tc   ): n_cf=10000 ... done (~3s,  mean_cl=140.7)
-##>   L=16, T=4      (above Tc): n_cf=10000 ... done (~3s,  mean_cl=4.3)
-##>   L=32, T=1.5    (below Tc): n_cf=10000 ... done (~12s, mean_cl=995.3)
-##>   L=32, T=2.269  (at Tc   ): n_cf=10000 ... done (~12s, mean_cl=462.7)
-##>   L=32, T=4      (above Tc): n_cf=10000 ... done (~12s, mean_cl=4.2)
-##>   L=64, T=1.5    (below Tc): n_cf=10000 ... done (~50s, mean_cl=3984.5)
-##>   L=64, T=2.269  (at Tc   ): n_cf=10000 ... done (~50s, mean_cl=1573.1)
-##>   L=64, T=4      (above Tc): n_cf=10000 ... done (~50s, mean_cl=4.3)
-##> =========================
-##>
-##> [Wolff trace appendix figure displays: 4x3 grid, 4 obs x 3 T regimes, 4 L overlay]
-
-
-# =============================================================================
-# Section 9 part 3: Wolff autocorrelation diagnostics
-#
-# Parallel to Section 8 for Metropolis. For every (L, T) cell from
-# section9_wolff_out$runs:
-#
-#   - rho_E(t), rho_M(t):  autocorrelation functions (in cluster-flip units)
-#   - tau_E_cf, tau_M_cf:  Sokal-windowed integrated autocorrelation time
-#                          in cluster flips (Wolff's natural unit)
-#   - tau_E_sw, tau_M_sw:  the same tau converted to equivalent sweeps
-#                          (tau_cf * mean_cluster / N), for direct
-#                          comparison with Section 8 Metropolis numbers
-#   - ESS_E, ESS_M:        n / (2 * tau_cf)
-#   - SE(<e>), SE(<|m|>):  sd * sqrt(2 * tau_cf / n_cluster_flips)
-#
-# Expected differences from Metropolis:
-#
-#   1. Wolff tau values (in cluster-flip units) are O(1) even at T_c, not
-#      hundreds or thousands. This is "no critical slowing down".
-#
-#   2. The z-fit for tau_E: slope ~0.5-0.7 here (finite-size artifact;
-#      literature is ~0.25 from Wolff 1989).
-#
-#   3. For tau_M: Wolff hits the Sokal floor (tau >= 0.5) at every L.
-#      We detect this and refuse to fit (constant tau gives a degenerate
-#      slope). In equivalent-sweep units, tau_M_sw drops as L grows
-#      because mean cluster size grows faster than tau.
-#
-#   4. ESS = full chain length / 2 at T_c for both observables, vs
-#      Metropolis ESS ~10-30 at T_c, L=64.
-# =============================================================================
-
-
-# -----------------------------------------------------------------------------
-# 9.5.1: Per-cell Wolff diagnostics
-# -----------------------------------------------------------------------------
 
 cell_diagnostics_wolff <- function(run) {
   N <- run$L^2
   E_per_spin <- run$series$E / N
   m_per_spin <- abs(run$series$M) / N
   
-  diag_E <- integrated_tau(run$series$E)   # reused from Section 8
+  diag_E <- integrated_tau(run$series$E)   
   diag_M <- integrated_tau(run$series$M)
   n      <- nrow(run$series)
   
   se_e <- sd(E_per_spin) * sqrt(2 * diag_E$tau / n)
   se_m <- sd(m_per_spin) * sqrt(2 * diag_M$tau / n)
   
-  # Conversion: tau in sweeps = tau in cluster flips * (mean_cluster / N)
+  
   sweeps_per_flip <- run$mean_cluster_size / N
   tau_E_sw <- diag_E$tau * sweeps_per_flip
   tau_M_sw <- diag_M$tau * sweeps_per_flip
@@ -3189,9 +2668,6 @@ build_diagnostics_table_wolff <- function(runs) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 9.5.2: Pretty-print two tables (cluster-flip native + equivalent-sweep)
-# -----------------------------------------------------------------------------
 
 print_diagnostics_table_wolff <- function(diag_df) {
   cat("=== Wolff autocorrelation diagnostics across (L, T) ===\n")
@@ -3235,9 +2711,6 @@ print_diagnostics_table_wolff <- function(diag_df) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 9.5.3: z-fit for Wolff at T_c, with Sokal-floor degeneracy detection
-# -----------------------------------------------------------------------------
 
 fit_dynamic_z_wolff <- function(diag_df, observable = c("E", "M")) {
   observable <- match.arg(observable)
@@ -3254,7 +2727,7 @@ fit_dynamic_z_wolff <- function(diag_df, observable = c("E", "M")) {
   }
   
   taus <- sub[[tau_col]]
-  # Detect Sokal-floor degeneracy: all tau within 2% of 0.5 -> meaningless fit.
+  
   floor_margin <- (taus - 0.5) / 0.5
   if (all(abs(floor_margin) < 0.02)) {
     cat(sprintf("  z (from tau_%s): all tau values at Sokal floor 0.5 (+/- 2%%);\n",
@@ -3272,10 +2745,6 @@ fit_dynamic_z_wolff <- function(diag_df, observable = c("E", "M")) {
   invisible(z)
 }
 
-
-# -----------------------------------------------------------------------------
-# 9.5.4: rho(t) grid (4 x 3), ggplot version
-# -----------------------------------------------------------------------------
 
 build_rho_dataframe_wolff <- function(runs, observable = c("E", "M"),
                                       max_lag_plot = 50) {
@@ -3366,12 +2835,6 @@ plot_autocorr_grid_wolff <- function(runs, observable = c("E", "M"),
 }
 
 
-# -----------------------------------------------------------------------------
-# 9.5.5: tau vs L summary (1 x 2), ggplot version
-#
-# Like Section 8's plot_tau_scaling, but using the Wolff literature z = 0.25
-# as the reference slope, plotted in cluster-flip units.
-# -----------------------------------------------------------------------------
 
 plot_tau_scaling_wolff <- function(diag_df) {
   diag_df$T_label <- factor(diag_df$T_label,
@@ -3380,7 +2843,7 @@ plot_tau_scaling_wolff <- function(diag_df) {
   L_values <- sort(unique(diag_df$L))
   L_min <- min(L_values); L_max <- max(L_values)
   
-  # Reference slope line (Wolff 1989 literature z = 0.25), anchored at smallest L
+  
   sub_tc <- diag_df[diag_df$T_label == "at Tc", ]
   sub_tc <- sub_tc[order(sub_tc$L), ]
   
@@ -3460,9 +2923,7 @@ plot_tau_scaling_wolff <- function(diag_df) {
 }
 
 
-# =============================================================================
-# Top-level driver
-# =============================================================================
+
 
 run_section9_diagnostics <- function(runs = section9_wolff_out$runs) {
   cat("\n############################################################\n")
@@ -3489,94 +2950,9 @@ run_section9_diagnostics <- function(runs = section9_wolff_out$runs) {
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
-
 section9_wolff_diag <- run_section9_diagnostics(section9_wolff_out$runs)
 
 
-##> ############################################################
-##> Section 9 part 3: Wolff autocorrelation diagnostics
-##> ############################################################
-##>
-##> === Wolff autocorrelation diagnostics across (L, T) ===
-##> Flag '!' next to tau means Sokal windowing did not close.
-##>
-##> -- Native cluster-flip units (Wolff's natural time scale) --
-##> L   regime     T        n_cf     tau_E_cf     tau_M_cf     ESS_E     ESS_M     se_e      se_m
-##> --------------------------------------------------------------------------------------------------
-##> 8   below Tc   1.5000   10000    0.61         0.50         8264      10000     ~0.001    ~0.001
-##> 8   at Tc      2.2692   10000    1.62         0.50         3076      10000     ~0.005    ~0.005
-##> 8   above Tc   4.0000   10000    5.97         0.55         837       9099      ~0.010    ~0.005
-##> 16  below Tc   1.5000   10000    0.62         0.50         8101      10000     ~0.001    ~0.001
-##> 16  at Tc      2.2692   10000    2.81         0.50         1779      10000     ~0.003    ~0.005
-##> 16  above Tc   4.0000   10000    23.7         0.61         211       8197      ~0.010    ~0.005
-##> 32  below Tc   1.5000   10000    0.59         0.50         8475      10000     ~0.001    ~0.001
-##> 32  at Tc      2.2692   10000    4.04         0.50         1238      10000     ~0.002    ~0.005
-##> 32  above Tc   4.0000   10000    372.3        2.39         13        2092      ~0.040    ~0.005
-##> 64  below Tc   1.5000   10000    0.58         0.50         8616      10000     ~0.001    ~0.001
-##> 64  at Tc      2.2692   10000    5.85         0.50         855       10000     ~0.002    ~0.005
-##> 64  above Tc   4.0000   10000    342.7        4.93         15        1014      ~0.040    ~0.005
-##> --------------------------------------------------------------------------------------------------
-##>
-##> -- Equivalent-sweep units (for direct comparison with Metropolis) --
-##> L   regime     T        mean_cl    eq_sweeps   tau_E_sw     tau_M_sw
-##> ---------------------------------------------------------------------------
-##> 8   below Tc   1.5000   62.3       9737        0.597        0.486
-##> 8   at Tc      2.2692   41.6       6500        1.056        0.325
-##> 8   above Tc   4.0000   4.2        656         0.390        0.221
-##> 16  below Tc   1.5000   249.7      9754        0.618        0.488
-##> 16  at Tc      2.2692   140.7      5497        1.424        0.275
-##> 16  above Tc   4.0000   4.3        168         0.408        0.195
-##> 32  below Tc   1.5000   995.3      9719        0.569        0.486
-##> 32  at Tc      2.2692   462.7      4519        1.867        0.226
-##> 32  above Tc   4.0000   4.2        41.1        1.548        0.197
-##> 64  below Tc   1.5000   3984.5     9728        0.589        0.486
-##> 64  at Tc      2.2692   1573.1     3840        2.246        0.192
-##> 64  above Tc   4.0000   4.3        10.5        0.358        0.107
-##> ---------------------------------------------------------------------------
-##>
-##> --- Dynamic critical exponent z (Wolff at T_c) ---
-##>   z (from tau_E, fit on L = 8,16,32,64): z = 0.617  (literature Wolff 1989: ~0.25)
-##>   z (from tau_M, fit on L = 8,16,32,64): all tau values at Sokal floor 0.5 (+/- 2%);
-##>     Wolff decorrelates this observable in < 1 cluster flip at every L.
-##>     No meaningful z to extract -- Wolff effectively draws iid samples.
-##>
-##> Plotting Wolff rho_E grid (4 x 3)...
-##> Plotting Wolff rho_M grid (4 x 3)...
-##> Plotting Wolff tau scaling summary (1 x 2)...
-
-
-
-
-# =============================================================================
-# Section 9 part 4: Metropolis vs Wolff head-to-head comparison
-#
-# This is the project's central scientific deliverable -- the picture of
-# "Wolff defeats critical slowing down" rendered in numbers and plots.
-#
-# Requires both diagnostics data frames already in memory:
-#   section8_diag        -- Metropolis (from Section 8)
-#   section9_wolff_diag  -- Wolff      (from Section 9 part 3)
-#
-# Optional (for Figure C only):
-#   bench_df             -- Metropolis Rcpp benchmark from Section 6.1
-#   bench_wolff_df       -- Wolff Rcpp benchmark from Section 9.3
-#
-# Produces:
-#   1. Merged comparison tables (raw and ratio).
-#   2. Figure A: tau vs L, both samplers in equivalent-sweep units.
-#      [Source of paper's fig:head2head_tau and tab:head2head.]
-#   3. Figure B: rho(t) overlay at T_c, fixed L on a common equivalent-
-#      sweep axis. [Source of paper's fig:rho_overlay.]
-#   4. Figure C: ESS per CPU second (Appendix E candidate).
-# =============================================================================
-
-
-# -----------------------------------------------------------------------------
-# 9.6.1: Merged comparison table
-# -----------------------------------------------------------------------------
 
 build_comparison_table <- function(metro_diag, wolff_diag) {
   rows <- list()
@@ -3621,7 +2997,7 @@ build_comparison_table <- function(metro_diag, wolff_diag) {
 print_comparison_table <- function(comp_df) {
   cat("=== Metropolis vs Wolff head-to-head ===\n\n")
   
-  # Raw tau values side by side, in common (equivalent-sweep) units
+  
   cat("--- tau (equivalent-sweep units) ---\n")
   cat(sprintf("%-3s %-10s %-8s %-12s %-12s %-12s %-12s %-10s %-10s\n",
               "L", "regime", "T",
@@ -3638,7 +3014,7 @@ print_comparison_table <- function(comp_df) {
   }
   cat(strrep("-", 100), "\n", sep = "")
   
-  # ESS values side by side
+  
   cat("\n--- ESS (samples obtained) ---\n")
   cat(sprintf("%-3s %-10s %-8s %-12s %-12s %-12s %-12s\n",
               "L", "regime", "T",
@@ -3653,7 +3029,7 @@ print_comparison_table <- function(comp_df) {
   }
   cat(strrep("-", 85), "\n", sep = "")
   
-  # Headline numbers at T_c (this is paper Tab head2head)
+  
   cat("\n--- Headline numbers at T_c ---\n")
   sub_tc <- comp_df[comp_df$T_label == "at Tc", ]
   for (i in seq_len(nrow(sub_tc))) {
@@ -3664,12 +3040,8 @@ print_comparison_table <- function(comp_df) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 9.6.2: Figure A -- tau vs L on same axes, both samplers
-# -----------------------------------------------------------------------------
-
 plot_metro_vs_wolff_tau <- function(metro_diag, wolff_diag) {
-  # Reshape both into long format with a sampler column for unified plotting
+  
   metro_long <- data.frame(
     sampler = "Metropolis",
     L       = metro_diag$L,
@@ -3686,7 +3058,7 @@ plot_metro_vs_wolff_tau <- function(metro_diag, wolff_diag) {
     L       = wolff_diag$L,
     T       = wolff_diag$T,
     T_label = wolff_diag$T_label,
-    tau_E   = wolff_diag$tau_E_sw,   # equivalent sweeps!
+    tau_E   = wolff_diag$tau_E_sw,  
     tau_M   = wolff_diag$tau_M_sw,
     closed_E = wolff_diag$closed_E,
     closed_M = wolff_diag$closed_M,
@@ -3700,7 +3072,7 @@ plot_metro_vs_wolff_tau <- function(metro_diag, wolff_diag) {
   L_values <- sort(unique(comb$L))
   L_min <- min(L_values); L_max <- max(L_values)
   
-  # Two reference slope lines (literature z), anchored at smallest L on Tc row.
+ 
   metro_tc <- metro_diag[metro_diag$T_label == "at Tc", ]
   metro_tc <- metro_tc[order(metro_tc$L), ]
   wolff_tc <- wolff_diag[wolff_diag$T_label == "at Tc", ]
@@ -3745,7 +3117,7 @@ plot_metro_vs_wolff_tau <- function(metro_diag, wolff_diag) {
       theme_paper() +
       theme(legend.position = "right")
     
-    # Reference slope lines
+   
     if (!is.null(ref_metro)) {
       p <- p + geom_line(data = ref_metro, aes(x = L, y = tau),
                          color = "grey55", linetype = "dotted",
@@ -3793,13 +3165,7 @@ plot_metro_vs_wolff_tau <- function(metro_diag, wolff_diag) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 9.6.3: Figure B -- rho(t) overlay at T_c, fixed L
-#
-# This is the source of paper's fig:rho_overlay. Both samplers on a common
-# equivalent-sweep x-axis. Metropolis = red, Wolff = blue (matches paper
-# caption).
-# -----------------------------------------------------------------------------
+
 
 plot_rho_overlay <- function(metro_runs, wolff_runs,
                              L = 32, max_lag_plot = 200) {
@@ -3814,11 +3180,11 @@ plot_rho_overlay <- function(metro_runs, wolff_runs,
   run_m <- metro_runs[[key_m]]
   run_w <- wolff_runs[[key_w]]
   
-  # Metropolis: x-axis = sweep lag (already in equivalent sweeps)
+  
   rho_E_m <- autocorrelation(run_m$series$E, max_lag = max_lag_plot)
   rho_M_m <- autocorrelation(run_m$series$M, max_lag = max_lag_plot)
   
-  # Wolff: convert cluster-flip lag to equivalent sweeps
+  
   rho_E_w <- autocorrelation(run_w$series$E, max_lag = max_lag_plot)
   rho_M_w <- autocorrelation(run_w$series$M, max_lag = max_lag_plot)
   sweeps_per_flip <- run_w$mean_cluster_size / (L * L)
@@ -3889,9 +3255,7 @@ plot_rho_overlay <- function(metro_runs, wolff_runs,
 }
 
 
-# -----------------------------------------------------------------------------
-# 9.6.4: Figure C -- ESS per CPU second (Appendix E candidate)
-# -----------------------------------------------------------------------------
+
 
 plot_ess_per_second <- function(metro_diag, wolff_diag,
                                 metro_bench, wolff_bench) {
@@ -3903,7 +3267,7 @@ plot_ess_per_second <- function(metro_diag, wolff_diag,
       bmatch <- which(bench_df$L == r$L &
                         abs(bench_df$T - r$T) < 1e-6)
       if (length(bmatch) != 1) next
-      per_step_time <- bench_df$t_cpp[bmatch] / 500   # benchmark uses 500 steps
+      per_step_time <- bench_df$t_cpp[bmatch] / 500   
       total_time    <- per_step_time * r[[chain_length_col]]
       out[[length(out) + 1]] <- data.frame(
         sampler  = sampler_name,
@@ -3975,28 +3339,26 @@ plot_ess_per_second <- function(metro_diag, wolff_diag,
 }
 
 
-# =============================================================================
-# Driver
-# =============================================================================
+
 
 run_section9_part4 <- function() {
   cat("\n############################################################\n")
   cat("Section 9 part 4: Metropolis vs Wolff head-to-head\n")
   cat("############################################################\n\n")
   
-  # 9.6.1: comparison tables
+  
   comp_df <- build_comparison_table(section8_diag, section9_wolff_diag)
   print_comparison_table(comp_df)
   
-  # 9.6.2: tau vs L, both samplers (paper fig:head2head_tau)
+  
   cat("\nPlotting Figure A (tau vs L, both samplers)...\n")
   print(plot_metro_vs_wolff_tau(section8_diag, section9_wolff_diag))
   
-  # 9.6.3: rho(t) overlay at T_c, L=32 (paper fig:rho_overlay)
+  
   cat("Plotting Figure B (rho(t) overlay at T_c, L=32)...\n")
   print(plot_rho_overlay(section7_out$runs, section9_wolff_out$runs, L = 32))
   
-  # 9.6.4: ESS per CPU second (Appendix E candidate)
+  
   if (exists("bench_df") && exists("bench_wolff_df")) {
     cat("Plotting Figure C (ESS per CPU second)...\n")
     print(plot_ess_per_second(section8_diag, section9_wolff_diag,
@@ -4009,76 +3371,14 @@ run_section9_part4 <- function() {
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
+
 
 comparison_df <- run_section9_part4()
 
 
-##> ############################################################
-##> Section 9 part 4: Metropolis vs Wolff head-to-head
-##> ############################################################
-##>
-##> === Metropolis vs Wolff head-to-head ===
-##>
-##> --- tau (equivalent-sweep units) ---
-##> L   regime     T        tau_E_met    tau_E_wol    tau_M_met    tau_M_wol    rE(met/w)  rM(met/w)
-##> ----------------------------------------------------------------------------------------------------
-##> 8   below Tc   1.5000   1.620        0.597        2.020        0.486        2.7        4.2
-##> 8   at Tc      2.2692   7.370        1.056        178.650      0.325        7.0        549.7
-##> 8   above Tc   4.0000   1.080        0.390        3.750        0.221        2.8        17.0
-##> 16  below Tc   1.5000   1.390        0.618        1.470        0.488        2.2        3.0
-##> 16  at Tc      2.2692   19.950       1.424        767.640      0.275        14.0       2791.4
-##> 16  above Tc   4.0000   0.980        0.408        3.860        0.195        2.4        19.8
-##> 32  below Tc   1.5000   1.540        0.569        1.730        0.486        2.7        3.6
-##> 32  at Tc      2.2692   56.340       1.867        2233.340     0.226        30.2       9884.7
-##> 32  above Tc   4.0000   1.010        1.548        3.270        0.197        0.7        16.6
-##> 64  below Tc   1.5000   1.540        0.589        1.680        0.486        2.6        3.5
-##> 64  at Tc      2.2692   220.900      2.246        15204.400    0.192        98.4       79189.6
-##> 64  above Tc   4.0000   0.970        0.358        3.570        0.107        2.7        33.4
-##> ----------------------------------------------------------------------------------------------------
-##>
-##> --- ESS (samples obtained) ---
-##>   (Metropolis ESS uses adaptive chain length; Wolff uses fixed 10000 cluster flips.)
-##>
-##> --- Headline numbers at T_c ---
-##>   L=8  : Wolff tau_E is 7.0x faster, tau_M is 549.7x faster than Metropolis
-##>   L=16 : Wolff tau_E is 14.0x faster, tau_M is 2791.4x faster than Metropolis
-##>   L=32 : Wolff tau_E is 30.2x faster, tau_M is 9884.7x faster than Metropolis
-##>   L=64 : Wolff tau_E is 98.4x faster, tau_M is 79189.6x faster than Metropolis
-##>
-##> Plotting Figure A (tau vs L, both samplers)...
-##> Plotting Figure B (rho(t) overlay at T_c, L=32)...
-##> Plotting Figure C (ESS per CPU second)...
 
 
-# =============================================================================
 # Section 10: Full temperature sweep with Wolff
-#
-# Produces the classic 2D Ising phase-transition figure: smooth curves of
-# u(T), c(T), |m|(T), and chi(T) across the full transition, for multiple
-# lattice sizes, overlaid on Onsager/Yang exact results.
-#
-# Why Wolff: at T_c L=64, Metropolis needed 320k sweeps for a decent
-# estimate; Wolff needs ~5k cluster flips. So 34 temperatures x 4 lattice
-# sizes = 136 runs is fast.
-#
-# Design choices (matching paper Sec 3.5):
-#   - Temperature grid: 34 points, refined around T_c
-#   - Lattice sizes: L in {8, 16, 32, 64}
-#   - Chain length: 5000 cluster flips per (L, T) cell, fixed
-#   - Burn-in: n_cluster_flips / 5 = 1000
-#   - Init: "hot" everywhere
-#
-# No bootstrap error bars here; that's Section 11. Section 10 is just
-# point estimates overlaid on ground truth.
-# =============================================================================
-
-
-# -----------------------------------------------------------------------------
-# 10.1: build the T-sweep grid
-# -----------------------------------------------------------------------------
 
 make_T_grid_sweep <- function() {
   sort(unique(c(
@@ -4091,9 +3391,6 @@ make_T_grid_sweep <- function() {
 }
 
 
-# -----------------------------------------------------------------------------
-# 10.2: run a single L-sweep across all temperatures
-# -----------------------------------------------------------------------------
 
 run_T_sweep_at_L <- function(L, T_grid, n_cluster_flips = 5000,
                              seed_base = 42) {
@@ -4124,10 +3421,6 @@ run_T_sweep_at_L <- function(L, T_grid, n_cluster_flips = 5000,
 }
 
 
-# -----------------------------------------------------------------------------
-# 10.3: run the sweep across all L values
-# -----------------------------------------------------------------------------
-
 run_full_T_sweep <- function(L_values        = c(8, 16, 32, 64),
                              T_grid          = make_T_grid_sweep(),
                              n_cluster_flips = 5000,
@@ -4153,19 +3446,12 @@ run_full_T_sweep <- function(L_values        = c(8, 16, 32, 64),
 }
 
 
-# -----------------------------------------------------------------------------
-# 10.4: 4-panel phase-transition figure (paper fig:phase_transition source)
-#
-# 2x2 layout, Onsager/Yang reference curves drawn as grey lines; MCMC
-# point estimates per L with thin connecting lines. Single shared L legend
-# at the bottom.
-# -----------------------------------------------------------------------------
 
 plot_T_sweep <- function(sweep_df, c_cap = 4) {
   sweep_df$L_fct <- factor(sweep_df$L,
                            levels = sort(unique(sweep_df$L)))
   
-  # Smooth reference curves
+  
   T_curve <- seq(min(sweep_df$T), max(sweep_df$T), length.out = 400)
   df_ref <- data.frame(
     T = T_curve,
@@ -4185,7 +3471,7 @@ plot_T_sweep <- function(sweep_df, c_cap = 4) {
              color = PAPER_COLORS$tc_line, size = 3, hjust = 0)
   }
   
-  # Helper: add per-L lines + points to a ggplot
+  
   add_mcmc_layers <- function(p, value_col) {
     p +
       geom_line(data = sweep_df,
@@ -4197,7 +3483,7 @@ plot_T_sweep <- function(sweep_df, c_cap = 4) {
                  size = 1.4)
   }
   
-  # Panel 1: Energy
+  
   p_u <- ggplot() +
     tc_line +
     geom_line(data = df_ref, aes(x = T, y = u),
@@ -4209,7 +3495,7 @@ plot_T_sweep <- function(sweep_df, c_cap = 4) {
     theme_paper()
   p_u <- add_mcmc_layers(p_u, "e")
   
-  # Panel 2: Specific heat (Onsager reference capped)
+  
   p_c <- ggplot() +
     tc_line +
     geom_line(data = df_ref, aes(x = T, y = c),
@@ -4225,7 +3511,7 @@ plot_T_sweep <- function(sweep_df, c_cap = 4) {
     theme_paper()
   p_c <- add_mcmc_layers(p_c, "c")
   
-  # Panel 3: Magnetization
+  
   p_m <- ggplot() +
     tc_line +
     geom_hline(yintercept = 0, color = "grey70",
@@ -4240,7 +3526,7 @@ plot_T_sweep <- function(sweep_df, c_cap = 4) {
     theme_paper()
   p_m <- add_mcmc_layers(p_m, "m")
   
-  # Panel 4: Susceptibility (no exact curve)
+  
   p_chi <- ggplot() +
     tc_line +
     tc_label(y_val = max(sweep_df$chi) * 0.9) +
@@ -4269,13 +3555,6 @@ plot_T_sweep <- function(sweep_df, c_cap = 4) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 10.5: mean cluster size vs T (Appendix A.4 candidate -- Wolff diagnostic)
-#
-# Single panel; shows the cluster size peaking near T_c (the physical
-# reason Wolff defeats critical slowing down) and saturating to N = L^2
-# below T_c. Per-L horizontal reference lines at L^2.
-# -----------------------------------------------------------------------------
 
 plot_T_sweep_cluster_size <- function(sweep_df) {
   sweep_df$L_fct <- factor(sweep_df$L,
@@ -4283,7 +3562,7 @@ plot_T_sweep_cluster_size <- function(sweep_df) {
   
   L_values <- sort(unique(sweep_df$L))
   
-  # Horizontal reference at N = L^2 for each L
+  
   df_refN <- data.frame(
     L_fct = factor(L_values, levels = L_values),
     y_val = L_values^2
@@ -4320,13 +3599,7 @@ plot_T_sweep_cluster_size <- function(sweep_df) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 10.6: chi peak finite-size scaling
-#
-# Locate T_peak(L) = argmax_T chi(T; L). chi at the peak grows as
-# L^(gamma/nu) = L^1.75. Section 12 will repeat this with bootstrap CIs;
-# here we just print and print the fit.
-# -----------------------------------------------------------------------------
+
 
 analyze_chi_peak <- function(sweep_df) {
   L_values <- sort(unique(sweep_df$L))
@@ -4362,9 +3635,7 @@ analyze_chi_peak <- function(sweep_df) {
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
+
 
 cat("\n############################################################\n")
 cat("Section 10: Full temperature sweep with Wolff\n")
@@ -4382,64 +3653,11 @@ cat("\nAnalyzing susceptibility peak...\n")
 chi_peak_df <- analyze_chi_peak(sweep_df)
 
 
-##> ############################################################
-##> Section 10: Full temperature sweep with Wolff
-##> ############################################################
-##>
-##> === Full T-sweep with Wolff ===
-##> Grid: 34 temperatures x 4 lattice sizes = 136 runs
-##> Chain length: 5000 cluster flips per run
-##>
-##>   L =  8: 34 temperatures in ~5s
-##>   L = 16: 34 temperatures in ~15s
-##>   L = 32: 34 temperatures in ~50s
-##>   L = 64: 34 temperatures in ~200s   (~3-4 minutes)
-##> ===============================
-##>
-##> Plotting 4-panel phase transition figure...
-##> Plotting mean cluster size vs T...
-##>
-##> Analyzing susceptibility peak...
-##>
-##> === Susceptibility peak analysis ===
-##> L   T_peak       chi_peak     T_peak - T_c
-##> ---------------------------------------------
-##> 8   2.36         ~1.6         +0.0908
-##> 16  2.30         ~5.4         +0.0308
-##> 32  2.28         ~17          +0.0108
-##> 64  2.27         ~57          +0.0008
-##> ---------------------------------------------
-##>
-##> chi_peak scaling: chi_peak ~ L^1.78  (literature: 1.75)
-##> ======================================
 
 
 
-
-
-# =============================================================================
 # Section 11: Block bootstrap for uncertainty quantification
-#
-# The one advanced component in the revised proposal. Block bootstrap
-# (Carlstein 1986 / Kunsch 1989) produces honest standard errors for MCMC
-# time-series estimators by resampling contiguous blocks of length
-# ceil(2*tau_int), so samples from different blocks are approximately
-# independent.
-#
-# Two parts:
-#
-#   11A: Full T-sweep with Wolff, bootstrap SEs for all four observables
-#        at every (L, T) cell.
-#        [Source of paper's fig:phase_transition and fig:boot_vs_naive]
-#
-#   11B: Single-cell Metropolis vs Wolff bootstrap at L=32, T_c.
-#        [Source of paper's tab:bootstrap_head2head]
-# =============================================================================
 
-
-# =============================================================================
-# 11.1: Block bootstrap primitive (non-overlapping; Carlstein 1986)
-# =============================================================================
 
 block_bootstrap <- function(x, stat_fn,
                             block_length = NULL,
@@ -4478,9 +3696,7 @@ block_bootstrap <- function(x, stat_fn,
 }
 
 
-# =============================================================================
-# 11.2: Bootstrap all four observables for a single run
-# =============================================================================
+
 
 bootstrap_all_observables <- function(run, n_boot = 200, seed = NULL) {
   N <- run$L^2; T <- run$T
@@ -4521,9 +3737,6 @@ bootstrap_all_observables <- function(run, n_boot = 200, seed = NULL) {
 }
 
 
-# =============================================================================
-# PART 11A: Full T-sweep with bootstrap SEs (Wolff)
-# =============================================================================
 
 run_T_sweep_with_bootstrap <- function(L_values        = c(8, 16, 32, 64),
                                        T_grid          = make_T_grid_sweep(),
@@ -4574,15 +3787,6 @@ run_T_sweep_with_bootstrap <- function(L_values        = c(8, 16, 32, 64),
 }
 
 
-# -----------------------------------------------------------------------------
-# 11A figure 1: Phase transition with error bars (full + zoom)
-# This is the source of paper fig:phase_transition.
-#
-# Layout: 4 rows (one per observable) x 2 cols (full + zoom).
-# Each panel shows Onsager/Yang reference (grey), per-L points + error bars.
-# Zoom column highlights T in [2.0, 2.5] where error bars become visible.
-# -----------------------------------------------------------------------------
-
 plot_T_sweep_with_errorbars <- function(sweep_err_df,
                                         T_zoom_min = 2.00,
                                         T_zoom_max = 2.50,
@@ -4590,7 +3794,7 @@ plot_T_sweep_with_errorbars <- function(sweep_err_df,
   sweep_err_df$L_fct <- factor(sweep_err_df$L,
                                levels = sort(unique(sweep_err_df$L)))
   
-  # Reference curves on dense T grid
+  
   T_full <- seq(min(sweep_err_df$T), max(sweep_err_df$T), length.out = 400)
   df_ref_full <- data.frame(
     T = T_full,
@@ -4619,12 +3823,12 @@ plot_T_sweep_with_errorbars <- function(sweep_err_df,
                         ymin = -Inf, ymax = Inf,
                         fill = "gold", alpha = 0.10)
   
-  # ---- Helper: full and zoomed panel for a given observable ----
+  
   make_pair <- function(value_col, se_col, ref_col, y_lab,
                         title_full, title_zoom,
                         y_lim_full = NULL, y_lim_zoom = NULL,
                         show_ref = TRUE) {
-    # Full
+    
     p_full <- ggplot() +
       tc_line +
       zoom_rect
@@ -4653,7 +3857,7 @@ plot_T_sweep_with_errorbars <- function(sweep_err_df,
       p_full <- p_full + coord_cartesian(ylim = y_lim_full)
     }
     
-    # Zoom
+    
     p_zoom <- ggplot() +
       tc_line
     if (show_ref && !is.null(ref_col)) {
@@ -4681,7 +3885,7 @@ plot_T_sweep_with_errorbars <- function(sweep_err_df,
     list(full = p_full, zoom = p_zoom)
   }
   
-  # Build the four observable pairs
+  
   energy_pair <- make_pair(
     "e", "e_se", "u",
     expression(italic(u)(italic(T))),
@@ -4716,7 +3920,7 @@ plot_T_sweep_with_errorbars <- function(sweep_err_df,
     show_ref = FALSE
   )
   
-  # Assemble 4 rows x 2 cols
+  
   combined <- (energy_pair$full | energy_pair$zoom) /
     (c_pair$full      | c_pair$zoom) /
     (m_pair$full      | m_pair$zoom) /
@@ -4743,15 +3947,13 @@ plot_T_sweep_with_errorbars <- function(sweep_err_df,
 }
 
 
-# -----------------------------------------------------------------------------
-# 11A figure 2: SE vs T for each observable (Appendix D candidate)
-# -----------------------------------------------------------------------------
+
 
 plot_SE_vs_T <- function(sweep_err_df) {
   sweep_err_df$L_fct <- factor(sweep_err_df$L,
                                levels = sort(unique(sweep_err_df$L)))
   
-  # Reshape long
+  
   long_df <- rbind(
     data.frame(sweep_err_df[, c("L_fct", "T")],
                se = sweep_err_df$e_se,   obs = "u"),
@@ -4793,9 +3995,6 @@ plot_SE_vs_T <- function(sweep_err_df) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 11A figure 3: Bootstrap vs naive SE sanity check (paper fig:boot_vs_naive)
-# -----------------------------------------------------------------------------
 
 sanity_check_bootstrap_vs_naive <- function(L              = 32,
                                             T_grid         = make_T_grid_sweep(),
@@ -4836,7 +4035,7 @@ sanity_check_bootstrap_vs_naive <- function(L              = 32,
               df$T[which.max(df$ratio_observed)]))
   cat("=====================================================\n")
   
-  # ggplot version of the sanity-check figure
+  
   fig <- plot_boot_vs_naive(df, L = L)
   print(fig)
   
@@ -4845,7 +4044,7 @@ sanity_check_bootstrap_vs_naive <- function(L              = 32,
 
 
 plot_boot_vs_naive <- function(df, L) {
-  # Panel A: absolute SE values
+  
   long_se <- rbind(
     data.frame(T = df$T, se = df$naive_se, kind = "naive iid"),
     data.frame(T = df$T, se = df$boot_se,  kind = "block bootstrap")
@@ -4868,7 +4067,7 @@ plot_boot_vs_naive <- function(df, L) {
     theme_paper() +
     theme(legend.position = "bottom")
   
-  # Panel B: ratio compared to sqrt(2 tau)
+  
   long_ratio <- rbind(
     data.frame(T = df$T, ratio = df$ratio_observed, kind = "observed"),
     data.frame(T = df$T, ratio = df$ratio_expected, kind = "sqrt(2 tau_E)")
@@ -4910,10 +4109,7 @@ plot_boot_vs_naive <- function(df, L) {
 }
 
 
-# =============================================================================
-# PART 11B: Head-to-head Metropolis vs Wolff bootstrap at L=32, T_c
-# (Source of paper tab:bootstrap_head2head and §4.6 head-to-head text)
-# =============================================================================
+
 
 bootstrap_head_to_head_Tc <- function(L         = 32,
                                       T         = T_CRITICAL,
@@ -4977,7 +4173,7 @@ bootstrap_head_to_head_Tc <- function(L         = 32,
               n_samples %/% bs_w$bl_E, n_samples %/% bs_w$bl_M))
   cat("============================================\n")
   
-  # Render bootstrap-distribution figure (Appendix D candidate)
+  
   fig <- plot_h2h_bootstrap_distributions(bs_m, bs_w, L, T)
   print(fig)
   
@@ -4986,7 +4182,7 @@ bootstrap_head_to_head_Tc <- function(L         = 32,
 
 
 plot_h2h_bootstrap_distributions <- function(bs_m, bs_w, L, T) {
-  # Build long data frame with sampler / observable columns
+  
   build_obs <- function(name, m_samples, w_samples) {
     rbind(
       data.frame(sampler = "Metropolis", obs = name, value = m_samples),
@@ -5002,7 +4198,7 @@ plot_h2h_bootstrap_distributions <- function(bs_m, bs_w, L, T) {
   df$sampler <- factor(df$sampler, levels = c("Metropolis", "Wolff"))
   df$obs     <- factor(df$obs, levels = c("e", "c", "|m|", "chi"))
   
-  # Per-panel SE annotations
+  
   ann <- data.frame(
     obs     = factor(c("e", "c", "|m|", "chi"),
                      levels = c("e", "c", "|m|", "chi")),
@@ -5037,15 +4233,13 @@ plot_h2h_bootstrap_distributions <- function(bs_m, bs_w, L, T) {
 }
 
 
-# =============================================================================
-# Drive
-# =============================================================================
+
 
 cat("\n############################################################\n")
 cat("Section 11: Block bootstrap for uncertainty quantification\n")
 cat("############################################################\n\n")
 
-# 11A: full sweep with SEs
+
 sweep_err_df <- run_T_sweep_with_bootstrap()
 
 cat("\nSample of 11A results:\n")
@@ -5061,7 +4255,7 @@ print(plot_SE_vs_T(sweep_err_df))
 cat("11A figure 3: Bootstrap vs naive SE sanity check...\n")
 naive_vs_boot_df <- sanity_check_bootstrap_vs_naive(L = 32)
 
-# 11B: head-to-head
+
 cat("\n11B: Metropolis vs Wolff head-to-head at L=32, T_c...\n")
 h2h_result <- bootstrap_head_to_head_Tc()
 
@@ -5072,25 +4266,9 @@ h2h_result <- bootstrap_head_to_head_Tc()
 
 
 
-# =============================================================================
+
 # Section 12: T_c estimation with bootstrap confidence interval
-#
-# Source of paper's fig:tc_extrapolation and the §4.7 numbers:
-#   - point estimate T_c (all L) and (L >= 16)
-#   - 95% bootstrap CI for each
-#
-# Method:
-#   1. T_peak(L) = vertex of parabola fitted to 5 chi(T) points around argmax
-#   2. Extrapolate T_peak(L) = T_c + a/L + O(L^-2) by linear regression on 1/L
-#   3. Parametric bootstrap: at each of B = 1000 replicates, redraw chi(T) ~
-#      Normal(mean, SE), refit parabola at each L, refit the 1/L line.
-#      95% CI is the (2.5%, 97.5%) quantile of the resulting T_c distribution.
-# =============================================================================
 
-
-# -----------------------------------------------------------------------------
-# 12.1: parabolic peak location from 5 points around argmax
-# -----------------------------------------------------------------------------
 
 peak_T_parabolic <- function(T_grid, chi_values, n_side = 2) {
   stopifnot(length(T_grid) == length(chi_values))
@@ -5117,9 +4295,6 @@ peak_T_parabolic <- function(T_grid, chi_values, n_side = 2) {
 }
 
 
-# -----------------------------------------------------------------------------
-# 12.2: fit T_peak vs 1/L (intercept = estimated T_c)
-# -----------------------------------------------------------------------------
 
 fit_Tc_from_peaks <- function(L_values, T_peaks) {
   ok <- is.finite(T_peaks)
@@ -5131,10 +4306,6 @@ fit_Tc_from_peaks <- function(L_values, T_peaks) {
        fit   = fit)
 }
 
-
-# -----------------------------------------------------------------------------
-# 12.3: parametric bootstrap for T_c
-# -----------------------------------------------------------------------------
 
 bootstrap_Tc <- function(sweep_err_df,
                          L_values  = sort(unique(sweep_err_df$L)),
@@ -5151,12 +4322,12 @@ bootstrap_Tc <- function(sweep_err_df,
     list(L = L, T = sub$T, chi = sub$chi, chi_se = sub$chi_se)
   })
   
-  # Point estimate (no perturbation)
+  
   T_peaks_pt <- vapply(per_L, function(pl) peak_T_parabolic(pl$T, pl$chi),
                        numeric(1))
   pt_fit <- fit_Tc_from_peaks(L_values, T_peaks_pt)
   
-  # Bootstrap replicates
+  
   T_c_boot <- numeric(n_boot)
   T_peaks_boot <- matrix(NA_real_, nrow = n_boot, ncol = length(L_values))
   for (b in seq_len(n_boot)) {
@@ -5186,9 +4357,6 @@ bootstrap_Tc <- function(sweep_err_df,
 }
 
 
-# -----------------------------------------------------------------------------
-# 12.4: pretty printer
-# -----------------------------------------------------------------------------
 
 print_Tc_result <- function(res, label = "") {
   if (nchar(label) > 0) cat(sprintf("--- %s ---\n", label))
@@ -5214,17 +4382,6 @@ print_Tc_result <- function(res, label = "") {
 }
 
 
-# -----------------------------------------------------------------------------
-# 12.5a: Main figure -- T_peak vs 1/L extrapolation (paper fig:tc_extrapolation)
-#
-# Layout: single panel.
-#   - Dark blue points: T_peak(L) (all L fit)
-#   - Solid blue line: all-L extrapolation
-#   - Dotted green line: L >= 16 extrapolation
-#   - Light blue lines: 200 bootstrap replicate fits (envelope)
-#   - Dashed red horizontal: exact Onsager T_c
-#   - Vertical CI bar at 1/L = 0 (the extrapolation point)
-# -----------------------------------------------------------------------------
 
 plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
                                   n_envelope = 200) {
@@ -5232,7 +4389,7 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
   inv_L    <- 1 / L_values
   x_range  <- c(0, max(inv_L) * 1.05)
   
-  # Build envelope data: each replicate's fit drawn over x_range
+  
   envelope_rows <- list()
   if (!is.null(res_full$T_peaks_boot)) {
     n_keep <- min(n_envelope, nrow(res_full$T_peaks_boot))
@@ -5251,7 +4408,7 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
   }
   envelope_df <- if (length(envelope_rows)) do.call(rbind, envelope_rows) else NULL
   
-  # Point-estimate fit lines
+  
   pt_full <- data.frame(
     x = x_range,
     y = coef(res_full$fit)[1] + coef(res_full$fit)[2] * x_range
@@ -5261,10 +4418,10 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
     y = coef(res_trim$fit)[1] + coef(res_trim$fit)[2] * x_range
   ) else NULL
   
-  # Data points
+  
   pts_df <- data.frame(inv_L = inv_L, T_peak = res_full$T_peaks)
   
-  # CI bar at intercept (1/L = 0), one for each fit
+  
   ci_df <- data.frame(
     x      = 0,
     T_c    = res_full$T_c_point,
@@ -5287,14 +4444,14 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
   
   p <- ggplot()
   
-  # Bootstrap envelope (translucent)
+  
   if (!is.null(envelope_df)) {
     p <- p + geom_line(data = envelope_df,
                        aes(x = x, y = y, group = b),
                        color = "#5DADE2", alpha = 0.05, linewidth = 0.3)
   }
   
-  # Exact Tc reference
+  
   p <- p +
     geom_hline(yintercept = T_CRITICAL,
                linetype = "dashed", color = "#C0392B",
@@ -5302,7 +4459,7 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
     annotate("text", x = max(inv_L) * 0.7, y = T_CRITICAL,
              label = sprintf("exact T_c = %.5f", T_CRITICAL),
              color = "#C0392B", size = 2.8, hjust = 0, vjust = -0.5) +
-    # Point-estimate fit lines
+    
     geom_line(data = pt_full, aes(x = x, y = y),
               color = "#1F4E79", linewidth = 0.9)
   
@@ -5312,12 +4469,12 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
                        linewidth = 0.9)
   }
   
-  # Data points
+  
   p <- p + geom_point(data = pts_df,
                       aes(x = inv_L, y = T_peak),
                       color = "#1F4E79", size = 2.6)
   
-  # CI bars at the intercept
+  
   p <- p + geom_errorbar(data = ci_df,
                          aes(x = x, ymin = ci_lo, ymax = ci_hi),
                          width = 0.005, color = "#1F4E79",
@@ -5336,7 +4493,7 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
                  shape = 18, size = 3.0, color = "#1B7837")
   }
   
-  # Labeling and theme
+  
   caption_lines <- c(ci_df$label,
                      if (!is.null(ci_trim_df)) ci_trim_df$label else NULL)
   
@@ -5358,9 +4515,6 @@ plot_Tc_extrapolation <- function(res_full, res_trim = NULL,
 }
 
 
-# -----------------------------------------------------------------------------
-# 12.5b: chi(T) parabolic-fit diagnostic (Appendix D candidate)
-# -----------------------------------------------------------------------------
 
 plot_chi_peak_fits <- function(sweep_err_df, res,
                                T_window = c(2.10, 2.60)) {
@@ -5371,7 +4525,7 @@ plot_chi_peak_fits <- function(sweep_err_df, res,
                             sweep_err_df$T <= T_window[2], ]
   sub_all$L_fct <- factor(sub_all$L, levels = L_values)
   
-  # Build the parabolic-fit overlays per L
+  
   fit_rows  <- list()
   vert_rows <- list()
   for (L in L_values) {
@@ -5410,7 +4564,7 @@ plot_chi_peak_fits <- function(sweep_err_df, res,
                linewidth = 0.4) +
     geom_errorbar(data = sub_all,
                   aes(x = T,
-                      ymin = pmax(chi - chi_se, 1e-4),  # clamp for log scale
+                      ymin = pmax(chi - chi_se, 1e-4),  
                       ymax = chi + chi_se,
                       color = L_fct),
                   width = 0, linewidth = 0.6) +
@@ -5448,9 +4602,6 @@ plot_chi_peak_fits <- function(sweep_err_df, res,
 }
 
 
-# -----------------------------------------------------------------------------
-# 12.5c: bootstrap T_c distribution (Appendix D candidate)
-# -----------------------------------------------------------------------------
 
 plot_Tc_bootstrap_hist <- function(res) {
   boots <- res$T_c_boot[is.finite(res$T_c_boot)]
@@ -5482,11 +4633,6 @@ plot_Tc_bootstrap_hist <- function(res) {
     theme_paper()
 }
 
-
-# =============================================================================
-# Drive
-# =============================================================================
-
 cat("\n############################################################\n")
 cat("Section 12: T_c estimation with bootstrap CI\n")
 cat("############################################################\n\n")
@@ -5515,18 +4661,6 @@ cat("=============================================================\n")
 
 
 
-# -----------------------------------------------------------------------------
-# 11A figure 3 (Appendix D): Metropolis version of bootstrap vs naive SE
-#
-# Same idea as the Wolff version, but with adaptive Metropolis chain
-# length: 5000 sweeps away from T_c, scaled by L^2 near T_c (matches
-# Section 6.2 validation policy). At L=32, T_c, that's 80000 sweeps,
-# enough for tau_E ~ 56 to leave a few hundred independent samples.
-#
-# This is a stronger demonstration of the bootstrap correction because
-# Metropolis has tau orders of magnitude larger than Wolff, so the ratio
-# boot_SE / naive_SE is far above 1 across most of the T grid.
-# -----------------------------------------------------------------------------
 
 sanity_check_bootstrap_vs_naive_metro <- function(L         = 32,
                                                   T_grid    = make_T_grid_sweep(),
@@ -5536,7 +4670,7 @@ sanity_check_bootstrap_vs_naive_metro <- function(L         = 32,
   
   rows <- list()
   for (T in T_grid) {
-    # Adaptive chain length: longer near Tc to keep ESS reasonable
+    
     n_sweeps <- choose_n_sweeps(L, T, base_n = 5000, tol = 0.05)
     init     <- choose_init_state(T)
     n_burnin <- as.integer(n_sweeps / 5)
@@ -5584,15 +4718,8 @@ sanity_check_bootstrap_vs_naive_metro <- function(L         = 32,
 
 
 
-
-
-
-# -----------------------------------------------------------------------------
-# Appendix D: side-by-side Wolff vs Metropolis bootstrap-vs-naive figure
-# -----------------------------------------------------------------------------
-
 plot_boot_vs_naive_comparison <- function(wolff_df, metro_df, L) {
-  # Combine both samplers into long format for faceting
+  
   long_se <- rbind(
     data.frame(T = wolff_df$T, se = wolff_df$naive_se,
                kind = "naive iid", sampler = "Wolff"),
@@ -5623,7 +4750,7 @@ plot_boot_vs_naive_comparison <- function(wolff_df, metro_df, L) {
   long_ratio$sampler <- factor(long_ratio$sampler,
                                levels = c("Wolff", "Metropolis"))
   
-  # Top row: absolute SE values
+  
   p_se <- ggplot(long_se, aes(x = T, y = se, color = kind, group = kind)) +
     geom_vline(xintercept = T_CRITICAL,
                linetype = "dashed", color = PAPER_COLORS$tc_line,
@@ -5641,7 +4768,7 @@ plot_boot_vs_naive_comparison <- function(wolff_df, metro_df, L) {
     theme(legend.position = "bottom",
           strip.background = element_rect(fill = "grey95", color = NA))
   
-  # Bottom row: ratio compared to sqrt(2 tau)
+  
   p_ratio <- ggplot(long_ratio,
                     aes(x = T, y = ratio,
                         color = kind, linetype = kind, group = kind)) +
@@ -5684,23 +4811,13 @@ plot_boot_vs_naive_comparison <- function(wolff_df, metro_df, L) {
 }
 
 
-# Appendix D: Metropolis bootstrap-vs-naive sanity check
+
 cat("\n11A figure 4 (Appendix D): Metropolis bootstrap-vs-naive sanity check...\n")
 naive_vs_boot_metro_df <- sanity_check_bootstrap_vs_naive_metro(L = 32)
 
 cat("\n11A figure 5 (Appendix D): Wolff vs Metropolis side-by-side...\n")
 print(plot_boot_vs_naive_comparison(naive_vs_boot_df, naive_vs_boot_metro_df,
                                     L = 32))
-
-##> === Appendix D: bootstrap SE vs naive iid SE for energy, L=32 (Metropolis) ===
-##>   (34 temperatures, with adaptive chain length: 80000 sweeps near Tc, 5000 elsewhere)
-##>
-##> Median ratio (boot/naive): ~3-5
-##> Max ratio:  ~10-15  (probably at T=Tc or T=3.3, where tau_E is largest)
-##> Cells where Sokal didn't close: 0 / 34   (hopefully)
-##> =====================================================
-##>
-##> [comparison figure displays: 2x2 facet, top = absolute SE on log y, bottom = ratio]
 
 
 

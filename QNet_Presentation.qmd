@@ -1,0 +1,1187 @@
+---
+title: "QNet: Continuous Quantile Regression via Fourier Feature Networks for Censored Survival Analysis"
+author: "Abhisek Banerjee & Sounak Chakraborty"
+
+format:
+  revealjs:
+    theme: [default, custom.scss]
+    css: styles.css
+
+    # Slide geometry
+    width: 1280
+    height: 720
+    margin: 0.05
+    center: false
+
+    # Navigation & behavior
+    transition: slide
+    background-transition: fade
+    slide-number: true
+    progress: true
+    controls: true
+    hash: true
+    preview-links: true
+    incremental: false
+    chalkboard: true
+    code-line-numbers: true
+
+    # Math rendering
+    html-math-method: katex
+
+    # Tiger-stripe background ONLY for title slide
+    title-slide-attributes:
+      data-background-image: "assets/tigerstripes.png"
+      data-background-size: "cover"
+      data-background-position: "center"
+
+    # Fonts & head includes
+    include-in-header:
+      text: |
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+
+    # Footer + Home button
+    include-after-body:
+      text: |
+        <div class="mizzou-footer-bar">
+          <div class="mizzou-left">
+            <img src="assets/mizzou-logo.svg" alt="Mizzou logo">
+          </div>
+          <div class="mizzou-right">
+            Department of Statistics
+          </div>
+        </div>
+
+        <a class="home-btn" href="#outline" title="Go to Outline" aria-label="Go to Outline">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 10.5L12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>
+          </svg>
+        </a>
+
+resources:
+  - styles.css
+  - assets
+---
+
+
+## Motivation {#motivation .smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**Survival analysis** asks: *How long until an event occurs?*
+
+The challenge: **Right censoring** — we only know "at least this long" for some patients.
+
+**Traditional approaches:**
+
+- **Cox PH**: Assumes proportional hazards — often violated
+- **Kaplan-Meier**: Non-parametric but no covariates
+- **AFT models**: Parametric — what if the distribution is wrong?
+
+**What we want:** Develop a single neural network that predicts conditional survival quantiles $Q(\tau | \mathbf{x})$ at any continuous quantile level $\tau \in(0, 1)$ and covariate $x$, without distributional assumptions.
+
+
+
+:::
+::: {.column width="45%"}
+
+```{ojs}
+//| echo: false
+
+//| echo: false
+motivationViz = {
+  const W = 420, H = 340;
+  const gold = "#F1B82D", black = "#000000", dkGold = "#C4972A";
+  const ltGray = "#F5F2EB", gray = "#4A4A4A";
+  const eventColor = "#e74c3c", censorColor = "#2980b9";
+
+  const svg = d3.create("svg")
+    .attr("viewBox", `0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",black).attr("font-weight",700)
+    .text("Right-Censored Survival Data");
+
+  const padL=90, padR=30, padT=38, padB=60;
+  const xS = d3.scaleLinear().domain([0,36]).range([padL, W-padR]);
+
+  const patients = [
+    {name:"Patient A", t:28, cens:false},
+    {name:"Patient B", t:14, cens:true},
+    {name:"Patient C", t:33, cens:false},
+    {name:"Patient D", t:20, cens:true},
+    {name:"Patient E", t:9,  cens:false},
+    {name:"Patient F", t:25, cens:true},
+  ];
+
+  const rowH = (H - padT - padB) / patients.length;
+
+  // Time axis
+  svg.append("line").attr("x1",padL).attr("y1",H-padB).attr("x2",W-padR).attr("y2",H-padB).attr("stroke",gray);
+  [0,6,12,18,24,30,36].forEach(m => {
+    svg.append("line").attr("x1",xS(m)).attr("y1",H-padB).attr("x2",xS(m)).attr("y2",H-padB+5).attr("stroke",gray);
+    svg.append("text").attr("x",xS(m)).attr("y",H-padB+16).attr("text-anchor","middle").attr("font-size",9).attr("fill",gray).text(m);
+  });
+  svg.append("text").attr("x",(padL+W-padR)/2).attr("y",H-8).attr("text-anchor","middle").attr("font-size",10).attr("fill",gray).text("Months →");
+
+  // Draw each patient row
+  patients.forEach((p, i) => {
+    const y = padT + i * rowH + rowH / 2;
+    const col = p.cens ? censorColor : eventColor;
+
+    svg.append("text").attr("x",padL-8).attr("y",y+4).attr("text-anchor","end")
+      .attr("font-size",10).attr("fill",black).attr("font-weight",600).text(p.name);
+
+    svg.append("line").attr("x1",xS(0)).attr("y1",y).attr("x2",xS(p.t)).attr("y2",y)
+      .attr("stroke",col).attr("stroke-width",2.5).attr("stroke-linecap","round");
+
+    if (p.cens) {
+      const ax = xS(p.t);
+      svg.append("line").attr("x1",ax-6).attr("y1",y-5).attr("x2",ax).attr("y2",y).attr("stroke",col).attr("stroke-width",2);
+      svg.append("line").attr("x1",ax-6).attr("y1",y+5).attr("x2",ax).attr("y2",y).attr("stroke",col).attr("stroke-width",2);
+      svg.append("line").attr("x1",xS(p.t)).attr("y1",y).attr("x2",xS(Math.min(p.t+6,36))).attr("y2",y)
+        .attr("stroke",col).attr("stroke-width",1.5).attr("stroke-dasharray","3,3").attr("opacity",0.5);
+      svg.append("text").attr("x",xS(Math.min(p.t+3.5,35))).attr("y",y-6)
+        .attr("text-anchor","middle").attr("font-size",9).attr("fill",col).attr("font-weight",700).text("?");
+    } else {
+      svg.append("circle").attr("cx",xS(p.t)).attr("cy",y).attr("r",5)
+        .attr("fill",col).attr("stroke","white").attr("stroke-width",1.5);
+    }
+  });
+
+  // Legend — in bottom padding, between last patient and axis
+  const ly = H - padB - 12;
+  svg.append("circle").attr("cx",padL+5).attr("cy",ly).attr("r",4).attr("fill",eventColor);
+  svg.append("text").attr("x",padL+13).attr("y",ly+3.5).attr("font-size",9).attr("fill",eventColor).attr("font-weight",600).text("Event observed");
+
+  svg.append("line").attr("x1",padL+115).attr("y1",ly).attr("x2",padL+130).attr("y2",ly).attr("stroke",censorColor).attr("stroke-width",2);
+  svg.append("line").attr("x1",padL+124).attr("y1",ly-4).attr("x2",padL+130).attr("y2",ly).attr("stroke",censorColor).attr("stroke-width",1.5);
+  svg.append("line").attr("x1",padL+124).attr("y1",ly+4).attr("x2",padL+130).attr("y2",ly).attr("stroke",censorColor).attr("stroke-width",1.5);
+  svg.append("text").attr("x",padL+135).attr("y",ly+3.5).attr("font-size",9).attr("fill",censorColor).attr("font-weight",600).text("Censored");
+
+  return svg.node();
+}
+
+```
+
+:::
+:::
+
+- Estimating and predicting conditional survival quantiles gives clinically interpretable, patient-specific time-to-event information rather than only a relative risk or hazard ratio.
+- This is important because a clinician may want to know, for a 65-year-old lung cancer patient with given biomarkers and treatment history, the predicted 25th, 50th, and 75th percentiles of survival time—such as “there is a 50% chance the patient survives beyond 14 months, and a 25% chance beyond 24 months”—which is much more actionable for prognosis, treatment planning, and communicating uncertainty than a single hazard-based summary.
+
+
+## Existing Methods {#existing-methods .smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**DeepQuantreg** (Jia & Jeong, 2021):
+
+- Fits a **separate neural network** for each $\tau$
+- No information sharing across quantile levels
+
+**CQRNN** (Pearce et al., 2022):
+
+- Single NN with **M discrete output heads**
+- $\tau$ is hardcoded — cannot predict at new levels
+- Uses Portnoy's EM algorithm for censoring
+
+**Both approaches are limited** — we need a single model that predicts at any continuous $\tau$.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+existingViz = {
+  const W = 440, H = 300;
+  const gold = "#F1B82D", black = "#000000", dkGold = "#C4972A";
+  const ltGray = "#F5F2EB", gray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  const methods = [
+    {y:35, label:"DeepQuantreg", desc:"Separate NN per τ", issue:"No quantile sharing", color:"#8e44ad"},
+    {y:120, label:"CQRNN", desc:"Discrete τ grid (M heads)", issue:"Cannot predict new τ", color:"#2980b9"},
+    {y:210, label:"QNet (Ours)", desc:"Continuous τ input + Fourier", issue:"Single model, any τ", color:gold},
+  ];
+
+  methods.forEach(m => {
+    svg.append("rect").attr("x",20).attr("y",m.y).attr("width",400).attr("height",70).attr("rx",8)
+      .attr("fill","white").attr("stroke",m.color).attr("stroke-width",2);
+    svg.append("text").attr("x",35).attr("y",m.y+22).attr("font-size",13).attr("fill",black).attr("font-weight",700).text(m.label);
+    svg.append("text").attr("x",35).attr("y",m.y+40).attr("font-size",10).attr("fill",gray).text(m.desc);
+    svg.append("text").attr("x",35).attr("y",m.y+56).attr("font-size",10).attr("fill",m.color).attr("font-weight",600).text(m.issue);
+  });
+
+  
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+
+
+
+
+## QNet Architecture {#qnet-architecture .smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Key idea:** Feed $\tau$ as a **continuous input** alongside covariates $\mathbf{x}$.
+
+**Three components:**
+
+**1. Fourier Feature Encoder $\phi(\tau)$:**
+$$\phi(\tau) = \text{SiLU}\left(W_\pi [\cos(2\pi f\tau), \sin(2\pi f\tau)]^\top\right)$$
+Learnable frequencies $f$ via softplus.
+
+**2. Covariate Encoder $\Psi(\mathbf{x})$:**
+$$\Psi(\mathbf{x}) = \text{MLP}(\mathbf{x}) \in \mathbb{R}^d$$
+
+**3. Multiplicative Interaction:**
+$$\mathbf{z} = \phi(\tau) \odot \Psi(\mathbf{x})$$
+
+**4. Gated Dual-Regime Output:**
+$$\hat{Q}(\tau|\mathbf{x}) = \exp\left[(1-g) \cdot g_\ell(\mathbf{z}) + g \cdot g_e(\mathbf{z})\right]$$
+$$g = \sigma\left(s \cdot (\tau - \tau_0)\right)$$
+
+where $\tau_0$ and sharpness $s$ are **learnable**.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+archViz = {
+  const W = 460, H = 380;
+  const gold = "#F1B82D", black = "#000000", dkGold = "#C4972A";
+  const ltGray = "#F5F2EB", gray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H).attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  // --- Helper: append text with subscript via <tspan> ---
+  function addLabel(parent, x, y, parts, opts = {}) {
+    // parts: array of {text, sub} objects. If sub is true, render as subscript.
+    const t = parent.append("text")
+      .attr("x", x).attr("y", y)
+      .attr("text-anchor", opts.anchor || "middle")
+      .attr("fill", opts.fill || "white")
+      .attr("font-size", opts.size || 11)
+      .attr("font-weight", opts.weight || 600);
+    parts.forEach(p => {
+      if (p.sub) {
+        t.append("tspan")
+          .attr("font-size", (opts.size || 11) * 0.7)
+          .attr("baseline-shift", "sub")
+          .text(p.text);
+      } else {
+        t.append("tspan").text(p.text);
+      }
+    });
+    return t;
+  }
+
+  // Input boxes
+  const bw=90, bh=36;
+  // tau input
+  svg.append("rect").attr("x",30).attr("y",20).attr("width",bw).attr("height",bh).attr("rx",6).attr("fill","#2980b9").attr("stroke","white");
+  addLabel(svg, 75, 42, [{text:"τ ∈ (0,1)"}], {fill:"white", size:12});
+  // x input
+  svg.append("rect").attr("x",340).attr("y",20).attr("width",bw).attr("height",bh).attr("rx",6).attr("fill","#27ae60").attr("stroke","white");
+  addLabel(svg, 385, 42, [{text:"x ∈ ℝ"},{text:"p", sub:true}], {fill:"white", size:12});
+
+  // Encoders
+  svg.append("rect").attr("x",20).attr("y",80).attr("width",110).attr("height",40).attr("rx",6).attr("fill",gold);
+  addLabel(svg, 75, 104, [{text:"φ(τ) Fourier"}], {fill:black, size:10});
+  svg.append("rect").attr("x",330).attr("y",80).attr("width",110).attr("height",40).attr("rx",6).attr("fill",gold);
+  addLabel(svg, 385, 104, [{text:"Ψ(x) MLP"}], {fill:black, size:10});
+
+  // Arrows down from inputs to encoders
+  svg.append("line").attr("x1",75).attr("y1",56).attr("x2",75).attr("y2",80).attr("stroke",gray).attr("stroke-width",1.5);
+  svg.append("line").attr("x1",385).attr("y1",56).attr("x2",385).attr("y2",80).attr("stroke",gray).attr("stroke-width",1.5);
+
+  // Multiplicative fusion
+  svg.append("rect").attr("x",155).attr("y",150).attr("width",150).attr("height",40).attr("rx",6).attr("fill",black);
+  addLabel(svg, 230, 174, [{text:"z = φ(τ) ⊙ Ψ(x)"}], {fill:gold, size:11});
+
+  svg.append("line").attr("x1",75).attr("y1",120).attr("x2",180).attr("y2",150).attr("stroke",gray).attr("stroke-width",1.5);
+  svg.append("line").attr("x1",385).attr("y1",120).attr("x2",280).attr("y2",150).attr("stroke",gray).attr("stroke-width",1.5);
+
+  // Two branches: Body and Tail
+  svg.append("rect").attr("x",50).attr("y",220).attr("width",120).attr("height",40).attr("rx",6).attr("fill","#2980b9");
+  addLabel(svg, 110, 244, [{text:"g"},{text:"l", sub:true},{text:"(z) Body"}], {fill:"white", size:10});
+
+  svg.append("rect").attr("x",290).attr("y",220).attr("width",120).attr("height",40).attr("rx",6).attr("fill","#e74c3c");
+  addLabel(svg, 350, 244, [{text:"g"},{text:"e", sub:true},{text:"(z) Tail"}], {fill:"white", size:10});
+
+  svg.append("line").attr("x1",200).attr("y1",190).attr("x2",110).attr("y2",220).attr("stroke",gray).attr("stroke-width",1.5);
+  svg.append("line").attr("x1",260).attr("y1",190).attr("x2",350).attr("y2",220).attr("stroke",gray).attr("stroke-width",1.5);
+
+  // Gate
+  svg.append("rect").attr("x",165).attr("y",285).attr("width",130).attr("height",35).attr("rx",6).attr("fill",dkGold);
+  addLabel(svg, 230, 307, [{text:"Gate: σ(s·(τ−τ"},{text:"0", sub:true},{text:"))"}], {fill:"white", size:10});
+
+  svg.append("line").attr("x1",110).attr("y1",260).attr("x2",195).attr("y2",285).attr("stroke",gray).attr("stroke-width",1.5);
+  svg.append("line").attr("x1",350).attr("y1",260).attr("x2",265).attr("y2",285).attr("stroke",gray).attr("stroke-width",1.5);
+
+  // Output
+  svg.append("rect").attr("x",140).attr("y",340).attr("width",180).attr("height",30).attr("rx",6).attr("fill",black);
+  addLabel(svg, 230, 359, [{text:"Q̂(τ|x) = exp(output)"}], {fill:gold, size:11, weight:700});
+
+  svg.append("line").attr("x1",230).attr("y1",320).attr("x2",230).attr("y2",340).attr("stroke",gray).attr("stroke-width",1.5);
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+## Fourier Feature Encoding {.smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**Problem:** $\tau$ is a single number in $(0,1)$. Neural networks are bad at learning complex patterns from a single scalar input — this is called **spectral bias**.
+
+**Solution:** Expand $\tau$ into a vector of sinusoidal features at multiple frequencies before feeding it to the network.
+
+**Step 1 — Create basis functions:** For $B = 16$ learnable frequencies $f_1, \ldots, f_B$:
+
+$$\mathbf{v}(\tau) = \begin{bmatrix} \cos(2\pi f_1 \tau), \; \sin(2\pi f_1 \tau), \; \ldots, \; \cos(2\pi f_B \tau), \; \sin(2\pi f_B \tau) \end{bmatrix}$$
+
+This maps scalar $\tau \in (0,1)$ to a vector $\mathbf{v} \in \mathbb{R}^{2B}$ ($= 32$ features).
+
+**Step 2 — Project and activate:**
+
+$$\phi(\tau) = \text{SiLU}(\mathbf{W} \, \mathbf{v}(\tau) + \mathbf{b}) \;\in\; \mathbb{R}^{d}$$
+
+where $\mathbf{W} \in \mathbb{R}^{d \times 2B}$ is a learned projection matrix ($d = 32$).
+
+**Why learnable frequencies?** Each frequency is parameterized as $f_b = \text{softplus}(\theta_b)$ where $\theta_b \in \mathbb{R}$ is a free trainable parameter. The softplus ensures $f_b > 0$ always. The network discovers which frequency bands of $\tau$ matter for survival prediction, rather than fixing them in advance.
+
+:::
+::: {.column width="45%"}
+```{ojs}
+//| echo: false
+fourierViz = {
+  const W = 400, H = 310;
+  const gold = "#F1B82D", dkGold = "#C4972A", ltGray = "#F5F2EB", gray = "#4A4A4A", black = "#000";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H).attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  const padL=50, padR=25;
+
+  // — TOP PANEL: Raw τ —
+  const topY = 10;
+  svg.append("text").attr("x",W/2).attr("y",topY+14).attr("text-anchor","middle").attr("font-size",11).attr("fill",black).attr("font-weight",700)
+    .text("Raw τ → just one number");
+
+  const txS = d3.scaleLinear().domain([0,1]).range([padL, W-padR]);
+  const tyS = d3.scaleLinear().domain([0,1]).range([topY+80, topY+30]);
+
+  svg.append("line").attr("x1",padL).attr("y1",topY+80).attr("x2",W-padR).attr("y2",topY+80).attr("stroke",gray).attr("stroke-width",0.8);
+
+  const rawLine = d3.line();
+  svg.append("path").attr("d",rawLine([[txS(0),tyS(0)],[txS(1),tyS(1)]])).attr("fill","none").attr("stroke","#ccc").attr("stroke-width",3);
+  svg.append("text").attr("x",txS(0.55)).attr("y",tyS(0.55)-10).attr("text-anchor","middle").attr("font-size",9).attr("fill","#aaa").attr("font-weight",600)
+    .text("No structure to learn from");
+
+  svg.append("text").attr("x",padL-12).attr("y",tyS(0.5)+5).attr("text-anchor","middle").attr("font-size",15).attr("fill","#e74c3c").attr("font-weight",700).text("✗");
+
+  const divY = topY + 95;
+  svg.append("line").attr("x1",40).attr("y1",divY).attr("x2",W-40).attr("y2",divY).attr("stroke",dkGold).attr("stroke-width",1).attr("stroke-dasharray","4,3");
+  svg.append("text").attr("x",W/2).attr("y",divY-4).attr("text-anchor","middle").attr("font-size",9).attr("fill",dkGold).attr("font-weight",700).text("vs");
+
+  // — BOTTOM PANEL: Fourier φ(τ) —
+  const botTop = divY + 14;
+  svg.append("text").attr("x",W/2).attr("y",botTop).attr("text-anchor","middle").attr("font-size",11).attr("fill",black).attr("font-weight",700)
+    .text("φ(τ) → rich multi-scale features");
+
+  const botBottom = H - 50;
+  const byS = d3.scaleLinear().domain([-1.15,1.15]).range([botBottom, botTop+12]);
+
+  svg.append("line").attr("x1",padL).attr("y1",botBottom).attr("x2",W-padR).attr("y2",botBottom).attr("stroke",gray).attr("stroke-width",0.8);
+  svg.append("text").attr("x",W-padR).attr("y",botBottom+12).attr("text-anchor","end").attr("font-size",8).attr("fill",gray).text("τ →");
+
+  const bases = [
+    {f:1, fn:Math.cos, color:"#2980b9", label:"cos(2πτ)"},
+    {f:2, fn:Math.sin, color:"#27ae60", label:"sin(4πτ)"},
+    {f:4, fn:Math.cos, color:"#8e44ad", label:"cos(8πτ)"},
+  ];
+
+  const line = d3.line().curve(d3.curveBasis);
+
+  bases.forEach(b => {
+    const pts = d3.range(0,1.01,0.008).map(t => [txS(t), byS(b.fn(2*Math.PI*b.f*t))]);
+    svg.append("path").attr("d",line(pts)).attr("fill","none").attr("stroke",b.color).attr("stroke-width",2).attr("opacity",0.8);
+  });
+
+  svg.append("text").attr("x",padL-12).attr("y",byS(0)+5).attr("text-anchor","middle").attr("font-size",15).attr("fill","#27ae60").attr("font-weight",700).text("✓");
+
+  const legY = H - 18;
+  let legX = padL;
+  bases.forEach((b,i) => {
+    svg.append("line").attr("x1",legX).attr("y1",legY).attr("x2",legX+14).attr("y2",legY).attr("stroke",b.color).attr("stroke-width",2);
+    svg.append("text").attr("x",legX+18).attr("y",legY+3.5).attr("font-size",8).attr("fill",b.color).attr("font-weight",600).text(b.label);
+    legX += 80;
+  });
+
+  svg.append("text").attr("x",legX+2).attr("y",legY+3.5).attr("font-size",8).attr("fill",gray).text("… × 16 bases");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Gated Dual-Regime Architecture {.smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**Intuition:** The body and tail of a survival distribution behave differently depending upon the original distribution of the data.
+
+- **Body** ($\tau < \tau_0$): Densely populated, well-estimated
+- **Tail** ($\tau > \tau_0$): Sparse data, extreme values, extrapolation needed
+
+**QNet uses a smooth gate:**
+
+$$g(\tau) = \sigma\left(s \cdot (\tau - \tau_0)\right)$$
+
+$$\hat{Q}_{\log}(\tau|\mathbf{x}) = (1 - g) \cdot g_\ell(\mathbf{z}) + g \cdot g_e(\mathbf{z})$$
+where $\sigma(\cdot)$ is the **sigmoid function** $\sigma(x) = \frac{1}{1 + e^{-x}}$.
+
+
+- $\tau_0 \in [0.3, 0.85]$ — **learnable** transition point
+- $s \in [2, 50]$ — **learnable** sharpness
+- $g_\ell$ — deeper network (3 layers) for the body
+- $g_e$ — simpler network (2 layers) for the tail
+
+Both constrained via sigmoid parameterization.
+
+:::
+::: {.column width="45%"}
+
+```{ojs}
+//| echo: false
+
+//| echo: false
+gateViz = {
+  const W = 400, H = 310;
+  const gold = "#F1B82D", dkGold = "#C4972A", ltGray = "#F5F2EB", gray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H).attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20).attr("text-anchor","middle").attr("font-size",12).attr("fill","#000").attr("font-weight",700)
+    .text("Gate Function g(τ)");
+
+  const padL=55, padR=25, padT=50, padB=60;
+  const xS = d3.scaleLinear().domain([0,1]).range([padL, W-padR]);
+  const yS = d3.scaleLinear().domain([0,1]).range([H-padB, padT]);
+
+  // Axes
+  svg.append("line").attr("x1",padL).attr("y1",H-padB).attr("x2",W-padR).attr("y2",H-padB).attr("stroke",gray);
+  svg.append("line").attr("x1",padL).attr("y1",H-padB).attr("x2",padL).attr("y2",padT).attr("stroke",gray);
+
+  // Y-axis ticks
+  [0, 0.5, 1].forEach(v => {
+    svg.append("text").attr("x",padL-8).attr("y",yS(v)+3.5).attr("text-anchor","end").attr("font-size",8).attr("fill",gray).text(v);
+  });
+
+  // Axis labels
+  svg.append("text").attr("x",(padL+W-padR)/2).attr("y",H-padB+16).attr("text-anchor","middle").attr("font-size",10).attr("fill",gray).text("τ →");
+  svg.append("text").attr("x",12).attr("y",(H-padB+padT)/2).attr("text-anchor","middle").attr("font-size",10).attr("fill",gray)
+    .attr("transform",`rotate(-90,12,${(H-padB+padT)/2})`).text("g(τ)");
+
+  // Sigmoid curves
+  const sigmoid = (t, tau0, s) => 1/(1+Math.exp(-s*(t-tau0)));
+  const line = d3.line().curve(d3.curveBasis);
+
+  const configs = [
+    {tau0:0.6, s:8,  color:"#e74c3c", label:"s = 8 (gradual)"},
+    {tau0:0.6, s:15, color:"#2980b9", label:"s = 15"},
+    {tau0:0.6, s:30, color:"#27ae60", label:"s = 30 (sharp)"},
+  ];
+
+  configs.forEach(c => {
+    const pts = d3.range(0,1.01,0.005).map(t => [xS(t), yS(sigmoid(t,c.tau0,c.s))]);
+    svg.append("path").attr("d",line(pts)).attr("fill","none").attr("stroke",c.color).attr("stroke-width",2.2);
+  });
+
+  // τ₀ dashed line
+  svg.append("line").attr("x1",xS(0.6)).attr("y1",yS(0)).attr("x2",xS(0.6)).attr("y2",yS(1))
+    .attr("stroke",gold).attr("stroke-dasharray","5,3").attr("stroke-width",2);
+
+  // Region labels — ABOVE the plot in the header area, flanking τ₀
+  const labelY = 37;
+  svg.append("text").attr("x",(padL+xS(0.6))/2).attr("y",labelY).attr("text-anchor","middle")
+    .attr("font-size",10).attr("fill","#2980b9").attr("font-weight",600).text("← Body (gₗ)");
+  svg.append("text").attr("x",(xS(0.6)+W-padR)/2).attr("y",labelY).attr("text-anchor","middle")
+    .attr("font-size",10).attr("fill","#e74c3c").attr("font-weight",600).text("Tail (gₑ) →");
+  svg.append("text").attr("x",xS(0.6)).attr("y",labelY).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",gold).attr("font-weight",700).text("τ₀");
+
+  // Legend — horizontal row below the axis
+  const legY = H - 15;
+  let legX = padL;
+  configs.forEach((c,i) => {
+    svg.append("line").attr("x1",legX).attr("y1",legY).attr("x2",legX+14).attr("y2",legY).attr("stroke",c.color).attr("stroke-width",2);
+    svg.append("text").attr("x",legX+18).attr("y",legY+3.5).attr("font-size",8).attr("fill",c.color).attr("font-weight",600).text(c.label);
+    legX += 110;
+  });
+
+  return svg.node();
+}
+
+```
+
+:::
+:::
+
+
+## Loss Function: Inverse Probability of Censoring Weighting {#loss-function .smaller}
+
+**IPCW-Weighted Pinball Loss in Log-Space:**
+
+$$\mathcal{L}_{\text{pinball}} = \mathbb{E}_\tau \left[ \frac{1}{N} \sum_{i=1}^N \frac{\delta_i}{\hat{G}(Y_i)} \cdot w(\tau) \cdot \rho_\tau\left(\log Y_i - \log \hat{Q}(\tau | \mathbf{x}_i)\right) \right]$$
+
+**Key components:**
+
+- **IPCW weights** $\delta_i / \hat{G}(Y_i)$: where $\delta_i$ is the event indicator (1 = observed event, 0 = censored). $\hat{G}(t)$ is the Kaplan-Meier estimate of the censoring distribution, fitted on **training data only**. Censored observations receive zero weight.
+
+- **Check function** $\rho_\tau(u) = \max(\tau \cdot u, (\tau-1) \cdot u)$: Asymmetric — penalizes under-prediction more at high $\tau$, over-prediction more at low $\tau$.
+
+- **Log-space**: Ensures predicted survival times are positive: $\hat{Q} = \exp(\hat{Q}_{\log})$.
+
+- **Importance sampling** $w(\tau)$: Beta-uniform mixture over $\tau$ with correction weights — upweights extreme quantiles.
+
+
+## Training Details {#training .smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**Full training loss:**
+
+$$\mathcal{L}_{\text{total}} = w_1 \cdot \mathcal{L}_{\text{pinball}} + w_2 \cdot \cdot \mathcal{L}_{\text{mono}} + w_3 \cdot \mathcal{L}_{\text{gate}}$$
+
+**Monotonicity penalty:**
+$$\mathcal{L}_{\text{mono}} = \frac{1}{K-1} \sum_{k=1}^{K-1} \left[\max\left(0, -(\hat{Q}_{\log}^{(k+1)} - \hat{Q}_{\log}^{(k)})\right)\right]^2$$
+where $\hat{Q}_{\log}^{(k)} = \hat{Q}_{\log}(\tau_k | \mathbf{x})$ for $K = 13$ sorted $\tau$ values sampled per observation.
+
+Ensures $\hat{Q}(\tau_2) \geq \hat{Q}(\tau_1)$ when $\tau_2 > \tau_1$.
+
+**Gate regularization penalty:** 
+
+$$\mathcal{L}_{\text{gate}} = \lambda_b \left[\max(0,\; m - \bar{g}) + \max(0,\; \bar{g} - (1 - m))\right] + \lambda_s \max(0,\; s - 40)$$
+
+where $\bar{g} = \frac{1}{|\mathcal{T}|}\sum_{\tau \in \mathcal{T}} \sigma(s(\tau - \tau_0))$ is the average gate activation over a reference grid of 50 $\tau$ values, $m = 0.15$ is the minimum usage margin, $\lambda_b = 0.1$, and $\lambda_s = 0.001$ penalizes excessive sharpness.
+
+The first term ensures the average gate stays between 0.15 and 0.85 — so neither the body head nor the tail head is ignored. The second term discourages the sharpness $s$ from exceeding 40, preventing a near-discontinuous jump between the two regimes.
+
+**Optimizer:** AdamW with cosine annealing
+<!-- 
+- Main parameters: lr = $5 \times 10^{-4}$, weight decay $10^{-4}$
+- Gate parameters ($\tau_0$, $s$): lr = $3 \times 10^{-3}$, no decay
+- Gradient clipping at norm 5.0
+- Early stopping (patience = 80 epochs)
+-->
+:::
+::: {.column width="45%"}
+
+**$\tau$-Sampling Strategy:**
+
+Each training step samples $K = 13$ random $\tau$ values per observation from a Beta-uniform mixture:
+
+$$\tau \sim \begin{cases} \text{Uniform}(0.01, 0.99) & \text{w.p. } 0.55 \\ \text{Beta}(0.35, 0.35) & \text{w.p. } 0.45 \end{cases}$$
+
+The Beta component concentrates at **extremes** (near 0 and 1), ensuring tails are well-trained.
+
+**Importance weights** correct for the non-uniform sampling density.
+
+**Post-hoc monotonicity:**
+At inference, `np.maximum.accumulate` enforces strict ordering.
+
+:::
+:::
+
+
+## Proof of Concept: Simulation Design {.smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**Known DGP:** Weibull AFT with multicollinear blocks.
+
+$$T_i^* = \lambda_i \left(-\log U_i\right)^{1/\rho}, \quad \lambda_i = \exp(\mu_0 + \mathbf{x}_i^\top \beta)$$
+
+where $U_i \sim \text{Uniform}(0,1)$, shape $\rho = 1.7$, and intercept $\mu_0 = 5.5$. Censoring rate $\approx 30\%$.
+
+
+**Covariates ($p = 7$, 6 meaningful + 1 noise):**
+
+- **Independent:** `age` ($\beta = -0.015$), `treatment` ($\beta = 0.35$, binary), `hemoglobin` ($\beta = 0.06$)
+- **Block A** ($\rho = 0.70$): `creatinine` ($\beta = 0.035$), `albumin` ($\beta = 0.025$)
+- **Block B** ($\rho = 0.65$): `bmi` ($\beta = -0.025$), `noise1` ($\beta = 0$)
+
+
+**Setup:** $N = 250$, train/test = 175/75.
+
+**Goal:** Can QNet recover the true survival function and correctly identify noise under multicollinearity?
+
+:::
+::: {.column width="45%"}
+
+![](images/Unknown-896.png)
+
+:::
+:::
+## Proof of Concept: Results {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Censored patient (idx 7)** &emsp; **Observed event (idx 22)**
+
+::: {.columns}
+::: {.column width="50%"}
+![](images/survival_idx7_cens1.png){height=220px}
+:::
+::: {.column width="50%"}
+![](images/survival_idx22_cens0.png){height=220px}
+:::
+:::
+
+Existing quantile regression methods (DQR, CQRNN) predict at discrete $\tau$ values only — they cannot produce a full, smooth survival curve $\hat{S}(t|\mathbf{x})$. QNet's continuous quantile function enables direct inversion to personalized survival curves, bridging quantile regression and survival analysis in a way not previously available.
+
+:::
+::: {.column width="50%"}
+
+**Gradient-Based Importance**
+
+![](images/Unknown-906.png){height=250px}
+
+**`noise1` correctly assigned near-zero importance** despite $\rho = 0.65$ correlation with `bmi` — QNet separates true signal from correlated noise even at $N = 175$.
+
+:::
+:::
+
+
+## Deeper Insights via Simulation and Real Data Applications {#experiments .smaller}
+
+**Simulated DGP (10 repetitions, N=3,000):**
+
+**Crossing Mixture:** Treatment is protective early but harmful late. Survival times are drawn from a mixture of two Weibulls:
+
+- **Component 1:** Weibull(shape=1.5, scale=$e^{2+0.3x_2}$) — early failures
+- **Component 2:** Weibull(shape=3.0, scale=$e^{4-0.2x_3}$) — late failures
+
+Treated patients ($x_1 > 0$) draw from Component 2 with probability 0.8 vs 0.3 for untreated — producing **crossing survival curves** where treatment helps early but hurts late. This is the hardest scenario for PH-based methods, and where QNet's gated architecture has a natural advantage.
+
+**Real-World Datasets (5-fold CV):**
+
+| Dataset | N | Features | Event Rate | Domain |
+|---------|---|----------|------------|--------|
+| METABRIC | 1,903 | 9 | 58.0% | Breast cancer |
+| GBSG2 | 686 | 7 | 56.4% | Breast cancer |
+| Lung Cancer | 228 | 7 | 72.3% | Lung cancer |
+| FLCHAIN | 7,874 | 8 | 27.7% | Immunoglobulin |
+
+**Baselines:**  DQR and CQRNN
+
+## Evaluation Metrics {.smaller}
+
+**Four complementary metrics capture different aspects of prediction quality:**
+
+- **C-index** $\uparrow$: Concordance between predicted median and observed ranking. Standard discrimination metric.
+
+
+
+- **IPCW Pinball Loss** $\downarrow$: Weighted quantile-specific loss — the gold standard for evaluating quantile predictions under censoring.
+
+- **D-calibration** $\downarrow$: Measures whether $P(T \leq \hat{Q}(\tau)) \approx \tau$ across quantile levels. A well-calibrated model should have D-cal $\approx 0$.
+
+- **80% Coverage**: Proportion of **uncensored** observations where $T \in [\hat{Q}(0.1), \hat{Q}(0.9)]$. A well-calibrated model achieves $\approx 0.80$.
+
+## Results: DGP — QNet Wins Everything {.smaller}
+
+**DGP (Crossing Mixture):** Treatment is protective early but harmful late.
+
+This is the **hardest** scenario — the gated architecture was designed for this.
+
+| Model | C-index ↑ | Avg PB ↓ | D-cal ↓ | 80% Cov |
+|-------|-----------|----------|---------|---------|
+| **QNet** | **0.667 ± 0.011** | **5.57 ± 0.37** | **0.00029 ± 0.00016** | **0.804 ± 0.021** |
+| CQRNN | 0.660 ± 0.013 | 5.68 ± 0.32 | 0.00040 ± 0.00022 | 0.781 ± 0.020 |
+| DQR | 0.650 ± 0.008 | 6.36 ± 0.51 | 0.01664 ± 0.00173 | 0.634 ± 0.053 |
+
+QNet's learnable $\tau_0$ transition naturally accommodates the mixture structure — the gate learns to separate the two Weibull components.
+
+
+## Results: Real Data {#results .smaller}
+
+::: {.columns}
+::: {.column width="100%"}
+
+**5-Fold CV: Main Results**
+**5-Fold CV: Main Results**
+
+| | METABRIC | GBSG2 | Lung | FLCHAIN |
+|---|---|---|---|---|
+| **Best Avg PB** | **QNet** (21.8) | **QNet** (176.4) | **QNet** (57.4) | **QNet** (335.0) |
+| **Best 80% Cov** | **QNet** (0.806) | **QNet** (0.823) | **QNet** (0.776) | **QNet** (0.839) |
+| **Best C-index** | CQRNN (0.631) | DQR (0.676) | DQR (0.637) | CQRNN (0.766) |
+| **Best D-cal** | **QNet** (0.0017) | **QNet** (0.0039) | **QNet** (0.0053) | **QNet** (0.0009) |
+
+**Key findings:**
+
+- QNet achieves the **lowest average pinball loss on all 4 datasets** — the proper scoring rule for quantile regression
+- QNet has the **best calibration (D-cal) on all 4 datasets** and **closest-to-nominal 80% coverage on all 4**
+- QNet does not win C-index on any dataset — but **C-index only evaluates median ranking**, not the full quantile function. It is based on the median quantile only and does not provide any information about the other quantiles. DQR originally is giving identical prediction for all quantiles (a bug?) still had high C-index. 
+
+Consider two patients with true survival times T₁ = 100 and T₂ = 300 days. A model that predicts Q̂(0.5) = 50 and Q̂(0.5) = 60 achieves a perfect C-index of 1.0 — the ranking is correct. But both predictions are wildly wrong in magnitude, the prediction intervals are meaningless, and a clinician cannot use these numbers to counsel a patient. C-index only asks "who dies first?" — it says nothing about whether the predicted quantiles are accurate at any level.
+:::
+:::
+
+<!--
+## Results: DQR Coverage Failure {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**DQR-original 80% coverage across all datasets:**
+
+| Dataset | DQR-orig | QNet |
+|---------|----------|------|
+| METABRIC | **0.021** | 0.806 |
+| GBSG2 | **0.032** | 0.823 |
+| Lung | **0.005** | 0.776 |
+| FLCHAIN | **0.044** | 0.839 |
+
+The $\tau$-invariant bug makes every quantile prediction identical → prediction intervals have **zero width** → near-zero coverage.
+
+Even after correction, DQR-corrected consistently **under-covers** (0.634–0.723), suggesting per-$\tau$ independent fitting is inherently less effective.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+coverageViz = {
+  const W = 420, H = 300;
+  const gold = "#F1B82D", dkGold = "#C4972A", ltGray = "#F5F2EB", gray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H).attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22).attr("text-anchor","middle").attr("font-size",12).attr("fill","#000").attr("font-weight",700)
+    .text("80% Coverage: QNet vs DQR-original");
+
+  const datasets = ["METABRIC","GBSG2","Lung","FLCHAIN"];
+  const qnet = [0.806, 0.823, 0.776, 0.839];
+  const dqr = [0.021, 0.032, 0.005, 0.044];
+
+  const padL=70, padR=20, padT=40, padB=55;
+  const xS = d3.scaleBand().domain(datasets).range([padL, W-padR]).padding(0.3);
+  const yS = d3.scaleLinear().domain([0,1]).range([H-padB, padT]);
+
+  // Nominal line
+  svg.append("line").attr("x1",padL).attr("y1",yS(0.8)).attr("x2",W-padR).attr("y2",yS(0.8)).attr("stroke",gold).attr("stroke-dasharray","5,3").attr("stroke-width",2);
+  svg.append("text").attr("x",padL-5).attr("y",yS(0.8)+4).attr("text-anchor","end").attr("font-size",9).attr("fill",gold).attr("font-weight",600).text("0.80");
+
+  const bw = xS.bandwidth()/2 - 2;
+
+  datasets.forEach((d,i) => {
+    // QNet bar
+    svg.append("rect").attr("x",xS(d)).attr("y",yS(qnet[i])).attr("width",bw).attr("height",yS(0)-yS(qnet[i])).attr("rx",3).attr("fill","#2980b9");
+    // DQR bar
+    svg.append("rect").attr("x",xS(d)+bw+4).attr("y",yS(dqr[i])).attr("width",bw).attr("height",yS(0)-yS(dqr[i])).attr("rx",3).attr("fill","#e74c3c");
+    // Label
+    svg.append("text").attr("x",xS(d)+xS.bandwidth()/2).attr("y",H-padB+15).attr("text-anchor","middle").attr("font-size",9).attr("fill",gray).text(d);
+    // Values
+    svg.append("text").attr("x",xS(d)+bw/2).attr("y",yS(qnet[i])-5).attr("text-anchor","middle").attr("font-size",8).attr("fill","#2980b9").attr("font-weight",600).text(qnet[i].toFixed(2));
+    svg.append("text").attr("x",xS(d)+bw+4+bw/2).attr("y",yS(dqr[i])-5).attr("text-anchor","middle").attr("font-size",8).attr("fill","#e74c3c").attr("font-weight",600).text(dqr[i].toFixed(3));
+  });
+
+  // Legend
+  svg.append("rect").attr("x",W-140).attr("y",padT+5).attr("width",12).attr("height",12).attr("rx",2).attr("fill","#2980b9");
+  svg.append("text").attr("x",W-124).attr("y",padT+15).attr("font-size",10).attr("fill","#2980b9").text("QNet");
+  svg.append("rect").attr("x",W-140).attr("y",padT+23).attr("width",12).attr("height",12).attr("rx",2).attr("fill","#e74c3c");
+  svg.append("text").attr("x",W-124).attr("y",padT+33).attr("font-size",10).attr("fill","#e74c3c").text("DQR-orig");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Results: Simulation Study {.smaller}
+
+::: {.columns}
+::: {.column width="100%"}
+
+**10 repetitions per DGP, N = 3,000 (mean ± std)**
+
+| DGP | Best C-index | Best Avg PB | Best D-cal | Best 80% Cov |
+|-----|---|---|---|---|
+| **A: Log-Logistic** | LL-AFT (0.838) | LL-AFT (1.53) | CQRNN (0.00027) | **QNet (0.813)** |
+| **B: Nonlinear** | **QNet (0.810)** | CQRNN (3.52) | CQRNN (0.00028) | **QNet (0.832)** |
+| **C: Crossing** | **QNet (0.667)** | **QNet (5.57)** | **QNet (0.00029)** | **QNet (0.804)** |
+
+**Highlights:**
+
+- **DGP A**: QNet nearly matches the oracle (correctly specified LogLogistic AFT)
+- **DGP B**: Linear models collapse (C-index 0.668 vs QNet 0.810)
+- **DGP C**: QNet wins on **every metric** — its gated architecture naturally captures crossing mixtures
+- DQR-original: near-zero coverage across all DGPs (0.005–0.038)
+
+:::
+:::
+
+
+## Results: DGP B — Nonlinearity Matters {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**DGP B** has quadratic + interaction effects:
+
+$$\eta = 3 + 0.5x_1^2 - 0.3x_2^2 + 0.8\sin(x_3) + 0.4x_1 x_2$$
+
+**C-index comparison:**
+
+| Model | C-index |
+|-------|---------|
+| **QNet** | **0.810 ± 0.006** |
+| CQRNN | 0.808 ± 0.007 |
+| DQR-original | 0.795 ± 0.022 |
+| DQR-corrected | 0.765 ± 0.037 |
+| WQR | 0.668 ± 0.010 |
+| Weibull AFT | 0.667 ± 0.010 |
+
+Linear methods (WQR, AFTs) are ~14 points below QNet. DQR-corrected has **high variance** (std 0.037) — per-$\tau$ fitting is unstable on nonlinear data.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+dgpbViz = {
+  const W = 400, H = 300;
+  const gold = "#F1B82D", dkGold = "#C4972A", ltGray = "#F5F2EB", gray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H).attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22).attr("text-anchor","middle").attr("font-size",12).attr("fill","#000").attr("font-weight",700)
+    .text("DGP B: C-index by Model");
+
+  const models = ["QNet","CQRNN","DQR-orig","DQR-corr","WQR","Weib AFT"];
+  const cidx = [0.810, 0.808, 0.795, 0.765, 0.668, 0.667];
+  const colors = ["#2980b9","#27ae60","#8e44ad","#9b59b6","#e67e22","#e74c3c"];
+
+  const padL=70, padR=20, padT=35, padB=60;
+  const xS = d3.scaleBand().domain(models).range([padL, W-padR]).padding(0.2);
+  const yS = d3.scaleLinear().domain([0.6,0.85]).range([H-padB, padT]);
+
+  // Axis
+  [0.65,0.70,0.75,0.80,0.85].forEach(v => {
+    svg.append("line").attr("x1",padL).attr("y1",yS(v)).attr("x2",W-padR).attr("y2",yS(v)).attr("stroke","#eee");
+    svg.append("text").attr("x",padL-5).attr("y",yS(v)+3).attr("text-anchor","end").attr("font-size",8).attr("fill",gray).text(v.toFixed(2));
+  });
+
+  models.forEach((m,i) => {
+    svg.append("rect").attr("x",xS(m)).attr("y",yS(cidx[i])).attr("width",xS.bandwidth()).attr("height",yS(0.6)-yS(cidx[i])).attr("rx",3)
+      .attr("fill",colors[i]);
+    svg.append("text").attr("x",xS(m)+xS.bandwidth()/2).attr("y",yS(cidx[i])-5).attr("text-anchor","middle").attr("font-size",9)
+      .attr("fill",colors[i]).attr("font-weight",600).text(cidx[i].toFixed(3));
+    svg.append("text").attr("x",xS(m)+xS.bandwidth()/2).attr("y",H-padB+13).attr("text-anchor","middle").attr("font-size",8).attr("fill",gray)
+      .attr("transform",`rotate(-25,${xS(m)+xS.bandwidth()/2},${H-padB+13})`).text(m);
+  });
+
+  return svg.node();
+}
+```
+
+:::
+:::
+-->
+
+
+
+## Deliverables {#deliverables .smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**For each patient, QNet provides:**
+
+**Predicted quantile** $\hat{Q}(\tau|\mathbf{x})$ at any $\tau \in (0,1)$ — one forward pass
+
+**Smooth survival curve** $\hat{S}(t|\mathbf{x})$ — evaluate on a grid of 400 $\tau$ values
+
+**Prediction intervals** — e.g., 80% PI = $[\hat{Q}(0.1), \hat{Q}(0.9)]$
+
+**Predicted median** $\hat{Q}(0.5|\mathbf{x})$
+
+**Patient-specific uncertainty** — IQR = $\hat{Q}(0.75) - \hat{Q}(0.25)$
+
+
+**$\tau$-varying covariate importance** — gradient, permutation, ALE
+
+**Conditional density/hazard** — via $f(t) = (\partial Q / \partial \tau)^{-1}$
+
+:::
+::: {.column width="45%"}
+
+```{ojs}
+//| echo: false
+deliverablesViz = {
+  const W = 400, H = 320;
+  const gold = "#F1B82D", dkGold = "#C4972A", ltGray = "#F5F2EB", gray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H).attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20).attr("text-anchor","middle").attr("font-size",12).attr("fill","#000").attr("font-weight",700)
+    .text("Individual Survival Curve from QNet");
+
+  const padL=50, padR=20, padT=30, padB=40;
+  const xS = d3.scaleLinear().domain([0,200]).range([padL, W-padR]);
+  const yS = d3.scaleLinear().domain([0,1]).range([H-padB, padT]);
+
+  // Survival curve
+  const pts = d3.range(0,201,1).map(t => {
+    const s = Math.exp(-0.0002*t*t - 0.003*t);
+    return [xS(t), yS(s)];
+  });
+  const line = d3.line().curve(d3.curveBasis);
+
+  // Prediction interval band
+  const upper = d3.range(0,201,1).map(t => [xS(t), yS(Math.exp(-0.00012*t*t - 0.002*t))]);
+  const lower = d3.range(0,201,1).map(t => [xS(t), yS(Math.exp(-0.00035*t*t - 0.005*t))]);
+  const area = d3.area()
+    .x((d,i) => upper[i][0])
+    .y0((d,i) => lower[i][1])
+    .y1((d,i) => upper[i][1])
+    .curve(d3.curveBasis);
+
+  svg.append("path").attr("d",area(upper)).attr("fill","#2980b9").attr("opacity",0.15);
+  svg.append("path").attr("d",line(pts)).attr("fill","none").attr("stroke","#2980b9").attr("stroke-width",2.5);
+
+  // Median line
+  const medTime = 82;
+  svg.append("line").attr("x1",xS(0)).attr("y1",yS(0.5)).attr("x2",xS(medTime)).attr("y2",yS(0.5)).attr("stroke",gold).attr("stroke-dasharray","4,3");
+  svg.append("line").attr("x1",xS(medTime)).attr("y1",yS(0.5)).attr("x2",xS(medTime)).attr("y2",yS(0)).attr("stroke",gold).attr("stroke-dasharray","4,3");
+  svg.append("circle").attr("cx",xS(medTime)).attr("cy",yS(0.5)).attr("r",5).attr("fill",gold).attr("stroke","white").attr("stroke-width",2);
+  svg.append("text").attr("x",xS(medTime)+8).attr("y",yS(0.5)-8).attr("font-size",9).attr("fill",gold).attr("font-weight",600).text("Median = 82 mo");
+
+  // Axes
+  svg.append("text").attr("x",W/2).attr("y",H-5).attr("text-anchor","middle").attr("font-size",10).attr("fill",gray).text("Time (months)");
+  svg.append("text").attr("x",12).attr("y",(H-padB+padT)/2).attr("text-anchor","middle").attr("font-size",10).attr("fill",gray)
+    .attr("transform",`rotate(-90,12,${(H-padB+padT)/2})`).text("S(t|x)");
+
+  // PI label
+  svg.append("text").attr("x",xS(150)).attr("y",yS(0.7)).attr("font-size",9).attr("fill","#2980b9").attr("font-weight",600).text("80% PI");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Comparison Table {.smaller}
+
+**What each method delivers:**
+
+| Deliverable | QNet | CQRNN | DeepQuantreg |
+|---|:---:|:---:|:---:|
+| Quantile at any continuous $\tau$ | ✓ | ✗ (discrete grid) | ✗ (one $\tau$ per model) |
+| Smooth survival curve | ✓ | ✗ | ✗ |
+| Prediction intervals (any width) | ✓ | ✓ (from grid) | ✗ |
+| Covariate importance | ✓ | ✗ | ✗ |
+| $\tau$-varying covariate effects | ✓ | ✗ | ✗ |
+| Single model for all $\tau$ | ✓ | ✓ (fixed grid only) | ✗ |
+| Handles right censoring | ✓ (IPCW) | ✓ (Portnoy EM) | ✓ (IPCW, buggy) |
+
+
+## When Does QNet Excel? {.smaller}
+
+
+**QNet outperforms when:**
+
+**Proportional hazards is violated** — Cox-based methods assume PH; QNet doesn't
+
+**Covariate effects are nonlinear** — linear models (WQR, AFTs) cannot capture $x^2,$ $\sin,$ or interaction effects
+
+**Survival distributions have complex shapes** — crossing mixtures where treatment is protective early but harmful late 
+
+**Calibrated prediction intervals are needed** — QNet's 80% coverage is consistently closest to nominal across all 4 real datasets
+
+**Predictions at arbitrary $\tau$ are needed** — single forward pass, any continuous $\tau \in (0,1)$
+
+**QNet does NOT outperform when:**
+
+Correctly specified parametric model (e.g., if the true DGP is exactly log-logistic, LL-AFT wins)
+
+Very small samples (Lung, N=228: parametric bias helps)
+
+
+## Model Nature & Limitations {.smaller}
+
+**QNet is primarily a predictive model.**
+
+**What it does:**
+
+- Predicts personalized survival quantiles, curves, and intervals
+- Provides covariate importance via gradient-based analysis, permutation importance, and ALE plots
+- Ranks patients by risk at any quantile level
+
+**What it does NOT do (vs classical methods):**
+
+- No **p-values** for "is this covariate significant?"
+- No **confidence intervals** on effect sizes
+- No formal **hypothesis tests** (e.g., "does treatment effect differ from zero?")
+
+**Known limitation — IPCW under stress:** With heavy censoring, small $N$, or many covariates, the Kaplan-Meier censoring weights $\hat{G}(Y_i)^{-1}$ become large and unstable. This can make predicted survival curves **pessimistic** (biased toward shorter times), since a few highly-weighted early events dominate the loss. Observed on Lung ($N = 228$, 72% events) and FLCHAIN (27% events, heavy late censoring).
+
+**Scalability:** Current architecture handles $p \leq 20$ well. For $p = 100+$, would need L1 regularization or a variable selection pre-step.
+
+## Summary & Contributions {#conclusion .smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**Novel architecture:** Fourier-encoded continuous $\tau$ input with gated dual-regime output — first application to censored survival data.
+
+**Best calibration:** 80% coverage closest to nominal in most settings.
+
+**Lowest pinball loss:** Best average pinball on all 4 real datasets.
+
+**Single model:** One QNet predicts at any $\tau$ — unlike DQR (separate NNs) or CQRNN (fixed grid).
+
+**Rich deliverables:** Survival curves, prediction intervals, $\tau$-varying importance, MC Dropout uncertainty — all from one model.
+
+**Future work:**
+
+- High-dimensional extension ($p > 100$)
+- Uncertainty Aware Bayesian QNet
+- QNet incorporating Spatial dependence
+
+:::
+::: {.column width="45%"}
+
+```{ojs}
+//| echo: false
+summaryViz = {
+  const W = 380, H = 320;
+  const gold = "#F1B82D", dkGold = "#C4972A", ltGray = "#F5F2EB", gray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H).attr("rx",10).attr("fill",ltGray).attr("stroke",dkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",24).attr("text-anchor","middle").attr("font-size",13).attr("fill","#000").attr("font-weight",700)
+    .text("QNet: One Model, All Quantiles");
+
+  const steps = [
+    {y:45, label:"Fourier τ-Encoding", desc:"Learnable frequencies", color:"#2980b9"},
+    {y:100, label:"Gated Architecture", desc:"Body ↔ Tail transition", color:"#27ae60"},
+    {y:155, label:"IPCW Pinball Loss", desc:"Handles censoring", color:"#e67e22"},
+    {y:210, label:"Best Calibration", desc:"Closest to 0.80", color:gold},
+    {y:265, label:"Rich Deliverables", desc:"Curves, PIs, importance, MC Dropout", color:"#8e44ad"},
+  ];
+
+  // Timeline
+  svg.append("line").attr("x1",40).attr("y1",55).attr("x2",40).attr("y2",280).attr("stroke",dkGold).attr("stroke-width",2);
+
+  steps.forEach((s,i) => {
+    svg.append("circle").attr("cx",40).attr("cy",s.y+15).attr("r",8).attr("fill",s.color).attr("stroke","white").attr("stroke-width",2);
+    svg.append("rect").attr("x",60).attr("y",s.y).attr("width",300).attr("height",40).attr("rx",6)
+      .attr("fill","white").attr("stroke",s.color).attr("stroke-width",1.5);
+    svg.append("text").attr("x",72).attr("y",s.y+17).attr("font-size",11).attr("fill","#000").attr("font-weight",700).text(s.label);
+    svg.append("text").attr("x",72).attr("y",s.y+32).attr("font-size",9).attr("fill",gray).text(s.desc);
+  });
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+<div style="border: 1px solid #ccc; border-left: 4px solid #2c3e50; padding: 14px 18px; margin: 15px 0; background-color: #fafafa; border-radius: 4px; font-size: 14px;">
+**A shout out to my other student Mengyan Jing who is working on "Bayesian Spatial Additive Regression with Lancaster--Salkauskas Splines and Matern Gaussian Process Random Effects."**
+</div>
+
+##  {data-background-image="assets/tigerstripes.png" data-background-size="cover" data-background-position="center"}
+
+<div class="thankyou-slide">
+
+<div class="thankyou-content">
+
+Thank you for your attention!
+
+**Questions?**
+
+</div>
+
+</div>

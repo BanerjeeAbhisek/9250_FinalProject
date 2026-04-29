@@ -1,0 +1,62 @@
+/* =====================================================
+   Top faded pattern (DEFAULT: ON)
+   ===================================================== */
+.reveal .slide-background::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+
+  height: 220px;
+
+  background-image: url("assets/mizzou-pattern.png");
+  background-repeat: repeat;
+  background-size: 220px auto;
+  background-position: top left;
+
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0,0,0,1) 0%,
+    rgba(0,0,0,.7) 40%,
+    rgba(0,0,0,0) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0,0,0,1) 0%,
+    rgba(0,0,0,.7) 40%,
+    rgba(0,0,0,0) 100%
+  );
+
+  opacity: 0.45;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Ensure slide content is always above the pattern */
+.reveal .slide-content {
+  position: relative;
+  z-index: 2;
+}
+
+/* =====================================================
+   EXCLUDE slides that use tigerstripes background
+   (Title + Thank You)
+   ===================================================== */
+.reveal .slide-background[data-background-image*="tigerstripes"]::before {
+  display: none !important;
+}
+
+
+/* Hide the top pattern on slides that use tigerstripes (title + thank-you) */
+.reveal .slide-background[style*="tigerstripes"]::before,
+.reveal .slide-background[data-background-image*="tigerstripes"]::before,
+.reveal .slide-background.present[style*="tigerstripes"]::before,
+.reveal .slide-background.present[data-background-image*="tigerstripes"]::before {
+  display: none !important;
+}
+
+
+
+
+
